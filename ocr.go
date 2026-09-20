@@ -1,0 +1,120 @@
+//go:build windows
+
+// ocr.go 定义 OCR 的通用接口。以后要换引擎（例如 ONNX），
+// 只要再写一个实现了这个接口的类型即可，其它代码不用动。
+package main
+
+import (
+	"runtime"
+	"strings"
+	"sync"
+	"unicode"
+)
+
+// Bitmap 是一张 32 位 BGRA 位图：每像素 4 字节（B,G,R,A），自上而下排列。
+type Bitmap struct {
+	Pix    []byte
+	Width  int
+	Height int
+}
+
+// OCR 是文字识别接口。
+//
+// 说明：需求里给的示例签名是 Recognize(image []byte)，
+// 但纯字节数组没法自带宽高，所以这里用 Bitmap 带上尺寸信息。
+type OCR interface {
+	Recognize(img *Bitmap) (string, error)
+}
+
+// looksOnline 判断 OCR 出来的在线状态文本是不是「在线」。
+//
+// OCR 有时会在字与字之间插空格（例如「在 线」），所以先把空白都去掉再比。
+// 另外「不在线」里面也包含「在线」，必须单独排除掉，不然会误判。
+func looksOnline(text string) bool {
+	flat := strings.Join(strings.Fields(text), "")
+	if strings.Contains(flat, "不在线") {
+		return false
+	}
+	return strings.Contains(flat, "在线")
+}
+
+// scoreGood 是「这个结果已经够像样了」的分数线，够到了就不用再试别的候选图。
+const scoreGood = 6
+
+// scoreText 给一次 OCR 结果打分，用来在几张候选图里挑最好的那个结果。
+//
+// 汉字最值钱，字母数字次之，空白不算分，其它古怪符号倒扣分：
+// 这样「张三」会打败「张 三1」，也打败纯符号的噪声结果。
+func scoreText(s string) int {
+	score := 0
+	for _, r := range s {
+		switch {
+		case r >= 0x4E00 && r <= 0x9FFF:
+			score += 3
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			score += 2
+		case unicode.IsSpace(r):
+			// 空白不加不减
+		default:
+			score--
+		}
+	}
+	return score
+}
+
+// ---- OCR 任务队列：引擎必须固定在一条线程上跑 ----
+
+type ocrJob struct {
+	img  *Bitmap
+	text string
+	err  error
+	done chan struct{}
+}
+
+var (
+	ocrJobs     = make(chan *ocrJob)
+	ocrWorkerMu sync.Mutex
+	ocrStarted  bool
+)
+
+// recognizeBitmap 把截图交给 OCR 线程；调用方可以是任意 goroutine。
+func recognizeBitmap(img *Bitmap) (string, error) {
+	ocrWorkerMu.Lock()
+	if !ocrStarted {
+		ocrStarted = true
+		go ocrLoop()
+	}
+	ocrWorkerMu.Unlock()
+
+	job := &ocrJob{img: img, done: make(chan struct{})}
+	ocrJobs <- job
+	<-job.done
+	return job.text, job.err
+}
+
+// ocrLoop 是常驻的 OCR 线程。
+// WinRT/COM 有「线程套间」的概念，引擎在同一线程上创建和使用最稳妥，
+// 所以这里锁一条 OS 线程，引擎只在这里创建和调用。
+func ocrLoop() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	var eng OCR
+	var initErr error
+	for job := range ocrJobs {
+		if eng == nil && initErr == nil {
+			e, err := newWinOCREngine()
+			if err != nil {
+				initErr = err
+			} else {
+				eng = e
+			}
+		}
+		if initErr != nil {
+			job.err = initErr
+		} else {
+			job.text, job.err = eng.Recognize(job.img)
+		}
+		close(job.done)
+	}
+}

@@ -1,0 +1,10 @@
+# Build artifacts
+BossHelper.exe
+*.exe
+
+# Temp / debug dumps
+_*.txt
+
+# OS
+Thumbs.db
+.DS_Store
