@@ -19,6 +19,7 @@ const (
 	inkMinPixels = 6    // 笔迹像素少于这个数就当作没有字
 	inkMaxRatio  = 0.92 // 笔迹框占整张图的比例超过它就说明背景不干净，别裁
 	darkBgLum    = 110  // 背景亮度低于这个值就认为这是深色底，自动反色
+	stretchTrigger = 150 // 字与底的亮度差小于这个值才做对比度拉伸（差得够大就别动）
 )
 
 // subImage 抠出 [x0,y0)-(x1,y1) 这块，返回新位图（alpha 统一 255）。
@@ -148,6 +149,10 @@ func prepareAt(img *Bitmap, targetH int) (*Bitmap, bool) {
 		}
 	}
 
+	// 灰底灰字 / 浅色字对比度低是「认错字」的主因，先做一次对比度拉伸把字和底拉开。
+	// 代价只有一次线性遍历，不增加 OCR 调用次数。
+	out = stretchContrast(out)
+
 	// 放大：让文字高度接近 targetH
 	scale := 1
 	for scale < ocrMaxScale && out.Height*scale < targetH {
@@ -186,6 +191,64 @@ func ocrVariants(img *Bitmap) ([]*Bitmap, bool) {
 		}
 	}
 	return append(out, otsuBinary(base), invertImage(base)), true
+}
+
+// stretchContrast 以背景色为基准做对比度拉伸，把偏灰的字拉成接近纯黑、背景拉成接近纯白。
+//
+// 为什么要这一步：截图里的名字常常是「灰字浅底」或带抗锯齿的浅色字，字和背景差别小，
+// Windows OCR 容易认错或漏字。按 (背景-笔迹) 的差值做线性拉伸后，笔画边界变清晰，
+// 识别率明显提升，而且这只是一次 O(n) 遍历，不额外跑 OCR，不会拖慢速度。
+//
+// 只在对比确实偏低时（差值 < stretchTrigger）才拉伸，避免把本来就清晰的字拉过头。
+func stretchContrast(img *Bitmap) *Bitmap {
+	bg := borderColor(img)
+	bgLum := luminance(bg)
+	// 找出离背景最远的笔迹亮度，作为「最黑点」
+	minL := bgLum
+	maxL := bgLum
+	for i := 0; i+3 < len(img.Pix); i += 4 {
+		l := luminance(packRGB(img.Pix, i))
+		if l < minL {
+			minL = l
+		}
+		if l > maxL {
+			maxL = l
+		}
+	}
+	darkInk := bgLum-minL >= maxL-bgLum // true=深色字，false=浅色字
+	hi := maxL
+	if darkInk {
+		hi = minL
+	}
+	span := bgLum - hi
+	if span < 0 {
+		span = -span
+	}
+	// 对比度已经够高，不用动
+	if span >= stretchTrigger || span == 0 {
+		return img
+	}
+	// 把 [bgLum, hi] 这段映射成 [255, 0]（深色字）或 [0, 255]（浅色字）
+	k := 255.0 / float64(span)
+	dst := &Bitmap{Pix: make([]byte, len(img.Pix)), Width: img.Width, Height: img.Height}
+	for i := 0; i+3 < len(img.Pix); i += 4 {
+		l := luminance(packRGB(img.Pix, i))
+		var v float64
+		if darkInk {
+			v = float64(bgLum-l) * k // 越暗越接近 0
+		} else {
+			v = 255 - float64(l-bgLum)*k
+		}
+		if v < 0 {
+			v = 0
+		}
+		if v > 255 {
+			v = 255
+		}
+		c := byte(v + 0.5)
+		dst.Pix[i], dst.Pix[i+1], dst.Pix[i+2], dst.Pix[i+3] = c, c, c, 255
+	}
+	return dst
 }
 
 // luminance 粗略算颜色的亮度（0~255）。

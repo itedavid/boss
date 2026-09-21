@@ -8,7 +8,6 @@
 package main
 
 import (
-	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -28,24 +27,47 @@ var (
 	forceRunning bool
 	forceStopCh  chan struct{}
 	forceCount   int  // 本次已经点了多少次
-	forceStarted bool // 是否启动过（决定状态标签显示「未开始」还是「已停止」）
+	forceStarted bool // 是否启动过
 	forceLastPt  int  // 上一次用的点下标，用来避免连续两次点同一个点
+	forceGroup   int  // 当前强制点击用的是第几组点击点（1/2），0 表示没在跑
 )
 
-// startForceClick 开始强制点击。开始前把同样会动鼠标的任务都停掉。
-func startForceClick() {
+// startForceClick 开始某一组的强制点击（group=1/2），用对应组已采集的点击点。
+// 强制点击同一时刻只能有一组在跑：若已有别的组在跑，会先把它停掉再切到这一组。
+func startForceClick(group int) {
+	if group < 1 || group > 2 {
+		return
+	}
 	forceMu.Lock()
-	already := forceRunning
-	forceMu.Unlock()
-	if already {
+	if forceRunning {
+		// 先停掉当前在跑的那一组（切组）
+		forceRunning = false
+		close(forceStopCh)
+		forceStopCh = nil
+	}
+	var pts []Point
+	if group == 1 {
+		pts = cfg.ClickPoints
+	} else {
+		pts = cfg.ClickPoints2
+	}
+	if len(pts) == 0 {
+		forceMu.Unlock()
+		appendLog("强制点击%s 失败：请先采集至少一个点击点", groupName(group))
+		requestDetectUI()
 		return
 	}
 
-	if len(cfg.ClickPoints) == 0 {
-		appendLog("强制点击失败：请先采集至少一个点击点")
-		postMessage(hwndMain, WM_APP_DETECT, 0, 0)
-		return
-	}
+	stop := make(chan struct{})
+	forceRunning = true
+	forceStarted = true
+	forceStopCh = stop
+	forceCount = 0
+	forceLastPt = -1
+	forceGroup = group
+	// 配置先快照一份给后台，避免和主线程写配置打架
+	points := append([]Point(nil), pts...)
+	forceMu.Unlock()
 
 	// 打招呼、区域检测、点击点采集都会和强制点击抢鼠标，先停掉
 	autoMu.Lock()
@@ -56,32 +78,26 @@ func startForceClick() {
 	}
 	stopDetection("开始强制点击")
 	if capturing {
-		stopCaptureFlow()
-		appendLog("强制点击期间已停止采集，避免把自动点击记成采集点")
+		stopCaptureFlow(0)
+		appendLog("强制点击%s 期间已停止采集，避免把自动点击记成采集点", groupName(group))
 	}
 
-	stop := make(chan struct{})
-	forceMu.Lock()
-	forceRunning = true
-	forceStarted = true
-	forceStopCh = stop
-	forceCount = 0
-	forceLastPt = -1
-	// 配置先快照一份给后台，避免和主线程写配置打架
-	points := append([]Point(nil), cfg.ClickPoints...)
-	forceMu.Unlock()
-
-	appendLog("开始强制点击：每 %d~%dms 随机点一次（偶尔会更久），已采集点击点 %d 个",
-		forceMinMs, forceMinMs+forceJitterMs, len(points))
-	postMessage(hwndMain, WM_APP_DETECT, 0, 0)
+	appendLog("开始强制点击%s：每 %d~%dms 随机点一次（偶尔会更久），已采集点击点 %d 个",
+		groupName(group), forceMinMs, forceMinMs+forceJitterMs, len(points))
+	requestDetectUI()
 
 	go forceLoop(points, stop)
 }
 
-// stopForceClick 停止强制点击。reason 会记进日志，方便看出是谁停的。
-func stopForceClick(reason string) {
+// stopForceClick 停止强制点击。group 传 0 表示停掉当前在跑的那一组（Esc / 退出用），
+// 传 1/2 只在该组正在跑时才停。reason 会记进日志，方便看出是谁停的。
+func stopForceClick(group int, reason string) {
 	forceMu.Lock()
 	if !forceRunning {
+		forceMu.Unlock()
+		return
+	}
+	if group != 0 && forceGroup != group {
 		forceMu.Unlock()
 		return
 	}
@@ -95,7 +111,22 @@ func stopForceClick(reason string) {
 	} else {
 		appendLog("停止强制点击")
 	}
-	postMessage(hwndMain, WM_APP_DETECT, 0, 0)
+	requestDetectUI()
+}
+
+// toggleForceClick 切换某一组强制点击的开关：该组正在跑就停，没跑就开。
+func toggleForceClick(group int) {
+	if group < 1 || group > 2 {
+		return
+	}
+	forceMu.Lock()
+	active := forceRunning && forceGroup == group
+	forceMu.Unlock()
+	if active {
+		stopForceClick(group, "")
+	} else {
+		startForceClick(group)
+	}
 }
 
 // forceClickFn 是「真正把这一点点下去」的实现。正常运行时就是 humanClick，
@@ -173,26 +204,30 @@ func forceLoop(points []Point, stop <-chan struct{}) {
 			forceMu.Unlock()
 			appendLog("强制点击：(%d,%d)", p.X, p.Y)
 		}
-		postMessage(hwndMain, WM_APP_DETECT, 0, 0)
+		requestDetectUI()
 	}
 }
 
-// updateForceUI 刷新强制点击的状态标签。
+// updateForceUI 根据强制点击运行状态，刷新顶部「强制点击打招呼/下一页」按钮的文案：
+// 正在跑的那一组显示为「停止强制XX」，另一组显示「强制点击XX」。
 func updateForceUI() {
 	forceMu.Lock()
 	running := forceRunning
-	started := forceStarted
-	count := forceCount
+	grp := forceGroup
 	forceMu.Unlock()
 
-	state := "未开始"
-	switch {
-	case running:
-		state = "运行中"
-	case started:
-		state = "已停止"
+	labels := [2]string{"强制点击打招呼", "强制点击下一页"}
+	if running && grp >= 1 && grp <= 2 {
+		if grp == 1 {
+			labels[0] = "停止强制打招呼"
+		} else {
+			labels[1] = "停止强制下一页"
+		}
 	}
-	setWindowText(hwndForceStat, utf16ptr(fmt.Sprintf(
-		"强制点击：%s　已点击 %d 次（每 %d~%d 秒随机点一个）",
-		state, count, forceMinMs/1000, (forceMinMs+forceJitterMs)/1000)))
+	if hwndForceBtn1 != 0 {
+		setWindowText(hwndForceBtn1, utf16ptr(labels[0]))
+	}
+	if hwndForceBtn2 != 0 {
+		setWindowText(hwndForceBtn2, utf16ptr(labels[1]))
+	}
 }

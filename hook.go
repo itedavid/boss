@@ -16,16 +16,16 @@ var (
 )
 
 var (
-	mouseHook    uintptr // HHOOK
 	hookThreadID uint32
-	capturing    bool // 只在主线程读写
+	capturing    bool // 钩子是否已安装（主线程读写）
+	captureGroup int  // 当前正在采集的组：1 / 2，0 表示没有
 
 	hotkeyHook     uintptr
 	hotkeyThreadID uint32
 	hotkeyRunning  bool
 
-	clickMu    sync.Mutex
-	clickQueue []Point
+	clickMu     sync.Mutex
+	clickQueues [2][]Point // 两组点击点队列，下标 0=打招呼按钮，1=下一页按钮
 )
 
 // startHotkey 永久安装全局键盘钩子，只为「按 Esc 紧急停止」。
@@ -67,20 +67,27 @@ func startHotkey() bool {
 }
 
 // startCapture 在一条独立的 OS 线程上安装全局低级鼠标钩子，并让该线程自己跑消息循环。
-// 钩子回调只做两件很轻的事：把坐标压进队列、给主窗口 Post 一条消息；
+// 钩子回调只做两件很轻的事：把坐标压进当前组的队列、给主窗口 Post 一条消息；
 // 写配置、刷界面都在主线程完成，避免阻塞。
-func startCapture() bool {
+//
+// 同一时刻只允许一个组在采集（全局鼠标钩子只有一个），所以若已在采集，直接切换
+// 到目标组即可；否则安装钩子并启动消息循环线程。
+func startCapture(group int) bool {
+	clickMu.Lock()
 	if capturing {
+		captureGroup = group
+		clickMu.Unlock()
 		return true
 	}
+	clickMu.Unlock()
+
 	ready := make(chan uint32, 1)
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
-		hinst := getModuleHandle()
-		mouseHook = setWindowsHookEx(WH_MOUSE_LL, mouseHookProc, hinst, 0)
-		if mouseHook == 0 {
+		h := setWindowsHookEx(WH_MOUSE_LL, mouseHookProc, getModuleHandle(), 0)
+		if h == 0 {
 			ready <- 0
 			return
 		}
@@ -90,33 +97,47 @@ func startCapture() bool {
 		var m MSG
 		peekMessage(&m)
 
-		hookThreadID = getCurrentThreadId()
-		ready <- hookThreadID
+		tid := getCurrentThreadId()
+		clickMu.Lock()
+		hookThreadID = tid
+		clickMu.Unlock()
+		ready <- tid
 
 		var msg MSG
 		for getMessage(&msg) != 0 {
 		}
 
-		if mouseHook != 0 {
-			unhookWindowsHookEx(mouseHook)
-			mouseHook = 0
+		unhookWindowsHookEx(h)
+		clickMu.Lock()
+		if hookThreadID == tid {
+			hookThreadID = 0
 		}
+		clickMu.Unlock()
 	}()
 
 	tid := <-ready
+	clickMu.Lock()
 	capturing = tid != 0
-	return capturing
+	if tid != 0 {
+		captureGroup = group
+	}
+	clickMu.Unlock()
+	return tid != 0
 }
 
 // stopCapture 让钩子线程退出消息循环并自行卸载钩子。
 func stopCapture() {
+	clickMu.Lock()
 	if !capturing {
+		clickMu.Unlock()
 		return
 	}
 	capturing = false
-	if hookThreadID != 0 {
-		postThreadMessage(hookThreadID, WM_QUIT, 0, 0)
-		hookThreadID = 0
+	captureGroup = 0
+	tid := hookThreadID
+	clickMu.Unlock()
+	if tid != 0 {
+		postThreadMessage(tid, WM_QUIT, 0, 0)
 	}
 }
 
@@ -125,10 +146,14 @@ func lowLevelMouseProc(nCode int32, wparam, lparam uintptr) uintptr {
 	if nCode >= 0 && wparam == WM_LBUTTONDOWN {
 		ms := (*MSLLHOOKSTRUCT)(uintptrToPointer(lparam))
 		clickMu.Lock()
-		clickQueue = append(clickQueue, Point{X: int(ms.Pt.X), Y: int(ms.Pt.Y)})
+		g := captureGroup
+		if g >= 1 && g <= 2 {
+			clickQueues[g-1] = append(clickQueues[g-1], Point{X: int(ms.Pt.X), Y: int(ms.Pt.Y)})
+		}
 		clickMu.Unlock()
 		if hwndMain != 0 {
-			postMessage(hwndMain, WM_APP_CLICK, 0, 0)
+			// wparam 带上当前组号，主线程据此把点并入对应组
+			postMessage(hwndMain, WM_APP_CLICK, uintptr(g), 0)
 		}
 	}
 	return callNextHookEx(nCode, wparam, lparam)
@@ -145,22 +170,30 @@ func lowLevelKeyboardProc(nCode int32, wparam, lparam uintptr) uintptr {
 	return callNextHookEx(nCode, wparam, lparam)
 }
 
-// drainClicks 在主线程把队列里的点击点并入配置，然后刷新界面并落盘。
-func drainClicks() {
+// drainClicks 在主线程把某一组的队列点击点并入配置，然后刷新界面并落盘。
+// group 为 1 或 2。
+func drainClicks(group int) {
+	if group < 1 || group > 2 {
+		return
+	}
 	clickMu.Lock()
-	pending := clickQueue
-	clickQueue = nil
+	pending := clickQueues[group-1]
+	clickQueues[group-1] = nil
 	clickMu.Unlock()
 
 	if len(pending) == 0 {
 		return
 	}
 	for _, p := range pending {
-		// 点在我们自己窗口上的（例如 [停止采集] 按钮）不算点击点
+		// 点在我们自己窗口上的（例如 [停止采集...] 按钮）不算点击点
 		if pointInMainWindow(p) {
 			continue
 		}
-		cfg.ClickPoints = append(cfg.ClickPoints, p)
+		if group == 1 {
+			cfg.ClickPoints = append(cfg.ClickPoints, p)
+		} else {
+			cfg.ClickPoints2 = append(cfg.ClickPoints2, p)
+		}
 	}
 	updateDisplay()
 	_ = saveConfig(cfg)

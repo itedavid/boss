@@ -25,9 +25,10 @@ type Point struct {
 
 // Config 是 config.json 的内存结构。
 type Config struct {
-	NameRegion   Rect    `json:"name_region"`
-	OnlineRegion Rect    `json:"online_region"`
-	ClickPoints  []Point `json:"click_points"`
+	NameRegion   Rect     `json:"name_region"`
+	OnlineRegion Rect     `json:"online_region"`
+	ClickPoints  []Point  `json:"click_points"`  // 组1：打招呼按钮的点击点
+	ClickPoints2 []Point  `json:"click_points2"` // 组2：下一页按钮的点击点
 }
 
 const configFileName = "config.json"
@@ -60,6 +61,9 @@ func loadConfig() Config {
 	if cfg.ClickPoints == nil {
 		// 保证 JSON 里始终是 [] 而不是 null
 		cfg.ClickPoints = []Point{}
+	}
+	if cfg.ClickPoints2 == nil {
+		cfg.ClickPoints2 = []Point{}
 	}
 	return cfg
 }

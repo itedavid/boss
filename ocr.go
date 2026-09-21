@@ -45,19 +45,38 @@ const scoreGood = 6
 //
 // 汉字最值钱，字母数字次之，空白不算分，其它古怪符号倒扣分：
 // 这样「张三」会打败「张 三1」，也打败纯符号的噪声结果。
+//
+// 在此之上再加一层「像不像我们真正要读的东西」的偏好：姓名/在线状态都是
+// 纯中文短词，所以纯汉字、长度合理的结果额外加分，混了数字或符号的结果减分，
+// 帮着在两张都认出一部分字的候选里挑出更干净的那个。
 func scoreText(s string) int {
 	score := 0
+	han, other := 0, 0
 	for _, r := range s {
 		switch {
 		case r >= 0x4E00 && r <= 0x9FFF:
 			score += 3
+			han++
 		case unicode.IsLetter(r), unicode.IsDigit(r):
 			score += 2
+			other++
 		case unicode.IsSpace(r):
 			// 空白不加不减
 		default:
 			score--
+			other++
 		}
+	}
+	// 纯中文短词（2~6 字）最贴合姓名/在线状态，给一层形状加分
+	switch {
+	case han >= 2 && han <= 6 && other == 0:
+		score += 2
+	case han > 0 && other == 0:
+		score++
+	}
+	// 夹带了非中文内容，说明这张候选图没有上一张干净
+	if other > 0 {
+		score -= other
 	}
 	return score
 }
