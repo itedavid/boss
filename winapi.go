@@ -60,7 +60,8 @@ const (
 	WM_CTLCOLORSTATIC   = 0x0138
 	SS_LEFT             = 0x00000000
 	SS_RIGHT            = 0x00000002
-	SS_NOTIFY           = 0x00000001 // 静态控件被点击时向父窗口发 STN_CLICKED
+	SS_NOTIFY           = 0x00000100 // 静态控件被点击时向父窗口发 STN_CLICKED（注意是 0x100，不是 0x1）
+	TRANSPARENT         = 1          // SetBkMode：文字背景透明（避免标签出现白底方块）
 	SRCCOPY             = 0x00CC0020
 	EM_SETSEL           = 0x00B1
 	EM_SCROLLCARET      = 0x00B7
@@ -191,6 +192,7 @@ var (
 	procDeleteDC         = modGdi32.NewProc("DeleteDC")
 	procDeleteObject     = modGdi32.NewProc("DeleteObject")
 	procCreateFontW      = modGdi32.NewProc("CreateFontW")
+	procSetBkMode        = modGdi32.NewProc("SetBkMode")
 )
 
 // utf16ptr 生成 Windows API 所需的 UTF-16 字符串指针（支持中文）。
@@ -347,6 +349,12 @@ func createFont(height int, face string) uintptr {
 		uintptr(unsafe.Pointer(utf16ptr(face))),
 	)
 	return r
+}
+
+// setBkMode 设置 DC 的文字背景模式（TRANSPARENT=1 让文字背景透明）。
+func setBkMode(hdc uintptr, mode int) int {
+	r, _, _ := procSetBkMode.Call(hdc, uintptr(mode))
+	return int(int32(r))
 }
 
 func createCompatibleDC(hdc uintptr) uintptr {

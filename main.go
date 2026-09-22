@@ -209,7 +209,8 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		return 0
 
 	case WM_CTLCOLORSTATIC:
-		// 让标签背景跟随窗口底色，避免出现白底方块
+		// 让标签背景跟随窗口底色；文字背景透明，避免出现白底方块（署名为大字体，尤其明显）
+		setBkMode(uintptr(wparam), TRANSPARENT)
 		return getSysColorBrush(COLOR_BTNFACE)
 
 	case WM_DESTROY:
