@@ -1,15 +1,17 @@
 //go:build windows
 
-// auto.go 负责「自动打招呼」状态机：
+// auto.go 负责「自动打招呼」主循环：
 //
-//	识别姓名 -> 确认换人 -> 检查在线
-//	  在线   -> 点[打招呼按钮]（组1）打招呼，随机停 0~0.5 秒
-//	  不在线 -> 什么都不点
+//	识别姓名
+//	  换人了（名字与上一人不同）-> 检查在线
+//	      在线   -> 点[打招呼按钮]（组1）打招呼，随机停 0~0.5 秒
+//	      不在线 -> 什么都不点
+//	  没换人（同名 / 读不出字）-> 不打招呼
 //	-> 两种情况都点[下一页按钮]（组2）翻到下一个，随机停留 0.8~1.5 秒
-//	-> 回到开头继续识别，重复
+//	-> 回到开头，重复
 //
-// 没有「等翻页成功」的看门狗：点完下一页直接停留、然后照常识别，
-// 读到新名字就是翻页成功，读到旧名字就是继续等下一轮，全程不阻塞。
+// 每轮必定以「翻页」结束，循环里没有「什么都不做」的分支，所以结构上不可能卡住。
+// 翻页本身带 0.8~1.5 秒停留，页面有足够时间渲染，不会连着读到加载中的旧页面。
 //
 // 整个循环跑在后台 goroutine 上，不阻塞界面；所有界面刷新都靠 PostMessage 回主线程。
 // 停止是「硬停止」：点完 [停止] 或按 Esc 之后，既不再截图识别，也不会再点鼠标。
@@ -19,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,6 +39,9 @@ const (
 
 const (
 	clickJitterPx = 4 // 点击位置在配置的点附近随机偏 ±4 像素
+
+	// 主循环节奏：每轮「截图 + 识别」之间歇多久（也用于截图/识别失败后的重试间隔）
+	autoInterval = 500 * time.Millisecond
 
 	// 打完招呼后的短停留：随机 0~greetPauseMax，然后直接翻页下一个用户。
 	// 按用户要求「隔 0.5 秒以内的随机数，直接就去翻页」。
@@ -62,10 +68,55 @@ var (
 	autoState   string // "" 表示还没启动过
 	autoPerson  string // 最近一次确认的人员
 	autoGreets  int    // 成功打招呼次数
-	autoSkips   int    // 因为不在线而跳过的次数
 	autoLastPt  int    // 上一次用的点击点下标（下一次尽量换一个）
 	autoLastErr string // 上一次的错误信息，避免刷屏
 )
+
+// autoMaxGreets 是本轮「最多打多少次招呼」，0 = 不限。
+//
+// 用原子变量而不是普通 int：界面上改一次就写一次，后台循环每次要打招呼前都读一次，
+// 所以运行中途调大 / 调小都能立刻生效，也不用加锁。
+var autoMaxGreets int32
+
+// setAutoMaxGreets 设置打招呼次数上限（负数按 0 = 不限处理）。
+func setAutoMaxGreets(n int) {
+	if n < 0 {
+		n = 0
+	}
+	atomic.StoreInt32(&autoMaxGreets, int32(n))
+}
+
+// autoMaxGreetsNow 读当前的打招呼次数上限，0 表示不限。
+func autoMaxGreetsNow() int {
+	return int(atomic.LoadInt32(&autoMaxGreets))
+}
+
+// autoGreetLimitReached 判断是否已经打到设定的次数上限。
+func autoGreetLimitReached() bool {
+	m := autoMaxGreetsNow()
+	if m <= 0 {
+		return false
+	}
+	autoMu.Lock()
+	n := autoGreets
+	autoMu.Unlock()
+	return n >= m
+}
+
+// greetProgressText 把本次进度拼成一句「本次已打 a　本次剩余 b」。
+// 没设上限（0）时剩余显示「不限」；上限被中途调小到小于已打数时剩余按 0 算，不出现负数。
+// 界面上的进度行和日志里的起始行共用它，保证两处措辞一致。
+func greetProgressText(greeted int) string {
+	m := autoMaxGreetsNow()
+	if m <= 0 {
+		return fmt.Sprintf("本次已打 %d　本次剩余 不限", greeted)
+	}
+	rest := m - greeted
+	if rest < 0 {
+		rest = 0
+	}
+	return fmt.Sprintf("本次已打 %d　本次剩余 %d", greeted, rest)
+}
 
 // 下面三个变量是「可替换的实现」：正常运行时就是真实的截图 / 识别 / 点击，
 // 单元测试里换成假实现，就能在不动鼠标、不截屏的情况下验证整条流程。
@@ -141,9 +192,8 @@ func startAuto() {
 		return
 	}
 
-	// 强制点击、V0.5 检测都会和打招呼抢鼠标，先停掉
+	// 强制点击会和打招呼抢鼠标，先停掉
 	stopForceClick(0, "自动打招呼开始")
-	stopDetection("自动打招呼开始")
 
 	stop := make(chan struct{})
 	autoMu.Lock()
@@ -151,7 +201,7 @@ func startAuto() {
 	autoStopCh = stop
 	autoState = stWaiting
 	autoPerson = ""
-	autoGreets, autoSkips = 0, 0
+	autoGreets = 0
 	autoLastErr = ""
 	autoMu.Unlock()
 
@@ -159,12 +209,17 @@ func startAuto() {
 		cfg.NameRegion.Left, cfg.NameRegion.Top, cfg.NameRegion.Right, cfg.NameRegion.Bottom,
 		cfg.OnlineRegion.Left, cfg.OnlineRegion.Top, cfg.OnlineRegion.Right, cfg.OnlineRegion.Bottom,
 		len(cfg.ClickPoints), len(cfg.ClickPoints2))
+	if autoMaxGreetsNow() > 0 {
+		appendLog("%s（打满自动停止）", greetProgressText(0))
+	} else {
+		appendLog("%s", greetProgressText(0))
+	}
 	setAutoState(stWaiting)
 
 	// 配置在启动时快照一份给后台用，避免和主线程写配置打架
 	nameRegion := cfg.NameRegion
 	onlineRegion := cfg.OnlineRegion
-	greetPoints := append([]Point(nil), cfg.ClickPoints...)  // 组1：打招呼按钮
+	greetPoints := append([]Point(nil), cfg.ClickPoints...) // 组1：打招呼按钮
 	nextPoints := append([]Point(nil), cfg.ClickPoints2...) // 组2：下一页按钮
 
 	go autoLoop(nameRegion, onlineRegion, greetPoints, nextPoints, stop)
@@ -215,13 +270,30 @@ func sleepOrStop(stop <-chan struct{}, d time.Duration) bool {
 
 // autoLoop 是自动打招呼主循环。
 // greetPoints 是组1（打招呼按钮），nextPoints 是组2（下一页按钮）。
+//
+// 判定只看一件事：屏幕上是不是换人了。
+//
+//	读到与 current 不同的新名字 -> 新人：查在线 -> 在线就打招呼
+//	读到同名 / 读不出字         -> 上一次翻页没生效，这一轮不打招呼
+//
+// 关键是这两种情况最后**都要翻页**，循环里没有任何「什么都不做」的分支，
+// 所以结构上不可能卡住：
+//   - 页面没变   -> 读到同名 -> 重翻一次
+//   - OCR 抖动   -> 每轮读出的都不一样 -> 当成新人正常处理
+//   - 读不出字   -> 重翻一次
+//
+// 翻页本身带 0.8~1.5 秒停留（见 clickNextPage），页面有足够时间渲染完，
+// 不会连着读到「加载中」的旧页面。
 func autoLoop(nameRegion, onlineRegion Rect, greetPoints, nextPoints []Point, stop <-chan struct{}) {
-	current := "" // 当前已确认的人员
-	pending := "" // 待确认的新结果
-	pendingN := 0 // 待确认结果连续出现次数
+	current := "" // 最近一次处理过的人员
 
 	for {
 		if autoStopped(stop) {
+			return
+		}
+		// 次数上限：打够了就收工（运行中把上限调小，也能在这里立刻生效）
+		if autoGreetLimitReached() {
+			stopAuto(fmt.Sprintf("已达到打招呼次数上限 %d 次", autoMaxGreetsNow()))
 			return
 		}
 		setAutoState(stReadP)
@@ -229,69 +301,44 @@ func autoLoop(nameRegion, onlineRegion Rect, greetPoints, nextPoints []Point, st
 		img, err := autoCapture(nameRegion)
 		if err != nil {
 			noteAutoError("截图失败", err)
-			sleepOrStop(stop, detectInterval)
+			sleepOrStop(stop, autoInterval)
 			continue
 		}
 		text, err := autoRecognize(img)
 		if err != nil {
 			noteAutoError("识别失败", err)
-			sleepOrStop(stop, detectInterval)
+			sleepOrStop(stop, autoInterval)
 			continue
 		}
 		noteAutoOK()
 		name := normalizeName(text)
 
-		// 常规轮询，用「连续 N 次确认」判断换人。
-		//
-		// 这里没有「等翻页成功」的看门狗：点完下一页，直接睡 0.8~1.5 秒（见 clickNextPage），
-		// 然后照常回来识别。读到新名字就是翻页成功，读到旧名字就是还没翻过去——
-		// 两种情况都只是继续下一轮，不会有任何阻塞或重试，也就不会卡死。
-		// 翻页万一没点中导致漏掉一两个人，按用户要求「漏了就漏了」，不影响后续。
-		switch {
-		case name == "":
-			// 没识别到字：继续等待，不动当前人员
-
-		case current == "" && pending == "":
+		if name != "" && name != current {
+			// 换人了：按新人处理
 			current = name
 			setAutoPerson(name)
-			appendLog("当前人员：%s", name)
+			setAutoState(stChanged)
+			appendLog("新人员：%s", name)
 			requestDetectUI()
 
-		case name == current:
-			if pending != "" {
-				appendLog("恢复为原人员：%s（丢弃待确认 %s）", name, pending)
-				requestDetectUI()
+			// 在线就打招呼、不在线就直接翻页，
+			// 两种情况下 greetPerson 内部都已经点了下一页并停留好了。
+			if greetPerson(name, onlineRegion, greetPoints, nextPoints, stop) == greetHalt {
+				return // 期间被停止
 			}
-			pending, pendingN = "", 0
-
-		case name == pending:
-			pendingN++
-			if pendingN >= detectConfirm {
-				current = name
-				pending, pendingN = "", 0
-				setAutoPerson(name)
-				setAutoState(stChanged)
-				appendLog("检测到新人员：%s", name)
-				requestDetectUI()
-
-				// 处理这个人：在线就打招呼、不在线就直接翻页，
-				// 两种情况下 greetPerson 内部都已经点了下一页并停留好了。
-				if greetPerson(name, onlineRegion, greetPoints, nextPoints, stop) == greetHalt {
-					return // 期间被停止
-				}
+		} else {
+			// 同名或读不出字：说明上一次翻页没生效（或者已经到底了），再翻一次。
+			if name == "" {
+				appendLog("没识别到姓名，重翻一次")
 			} else {
-				appendLog("疑似换人：%s（%d/%d）", name, pendingN, detectConfirm)
-				requestDetectUI()
+				appendLog("姓名未变化（%s），重翻一次", name)
 			}
-
-		default:
-			pending = name
-			pendingN = 1
-			appendLog("出现新结果：%s（1/%d）", name, detectConfirm)
-			requestDetectUI()
+			if clickNextPage(nextPoints, current, stop) {
+				return // 期间被停止
+			}
 		}
 
-		if sleepOrStop(stop, detectInterval) {
+		if sleepOrStop(stop, autoInterval) {
 			return
 		}
 	}
@@ -301,7 +348,7 @@ func autoLoop(nameRegion, onlineRegion Rect, greetPoints, nextPoints []Point, st
 type greetResult int
 
 const (
-	greetNexted greetResult = iota // 已经翻了页，接下来要盯姓名变化确认翻页成功
+	greetNexted greetResult = iota // 已翻页并停留完毕，可以进入下一轮
 	greetHalt                      // 期间收到停止信号，调用方要立刻退出
 )
 
@@ -331,8 +378,8 @@ func greetPerson(name string, onlineRegion Rect, greetPoints, nextPoints []Point
 		appendLog("在线状态识别失败：%s（按不在线处理，直接翻页）", err)
 		requestDetectUI()
 	} else {
+		// 在线与否只决定下一步动作，进度看状态标签就行，不写日志
 		online = looksOnline(text)
-		appendLog("在线状态：%s（%s）", onlineVerdict(text), name)
 	}
 
 	if online {
@@ -343,15 +390,11 @@ func greetPerson(name string, onlineRegion Rect, greetPoints, nextPoints []Point
 		}
 		// 打完招呼：随机停 0~0.5 秒，然后直接翻页下一个用户（不做别的判断）
 		pause := time.Duration(rand.Intn(int(greetPauseMax/time.Millisecond)+1)) * time.Millisecond
-		appendLog("打招呼后停留 %dms，接着翻页下一个", pause.Milliseconds())
 		if sleepOrStop(stop, pause) {
 			return greetHalt
 		}
-	} else {
-		autoMu.Lock()
-		autoSkips++
-		autoMu.Unlock()
 	}
+	// 不在线就什么都不点，直接往下走翻页（不留痕、不计数）
 
 	// 不管在线与否，都翻页到下一个用户
 	if clickNextPage(nextPoints, name, stop) {
@@ -363,13 +406,12 @@ func greetPerson(name string, onlineRegion Rect, greetPoints, nextPoints []Point
 // clickNextPage 点「下一页按钮」，并在点完后随机停留 0.8~1.5 秒防人机检测。
 // 返回 true 表示期间收到了停止信号。
 func clickNextPage(nextPoints []Point, name string, stop <-chan struct{}) bool {
-	appendLog("点下一页（%s）", name)
+	// 翻页是每轮必经动作，不写日志（状态标签里有进度）
 	if doPointClick(nextPoints, name, "下一页", false, stop) {
 		return true
 	}
 	// 点完下一页：随机停留 0.8~1.5 秒，防止人机检测
 	pause := nextPauseMin + time.Duration(rand.Intn(int(nextPauseMax-nextPauseMin)+1))
-	appendLog("下一页后停留 %dms（防人机检测）", pause.Milliseconds())
 	if sleepOrStop(stop, pause) {
 		return true
 	}
@@ -381,12 +423,8 @@ func clickNextPage(nextPoints []Point, name string, stop <-chan struct{}) bool {
 // label 用于日志/状态；isGreet 决定是否计入「已打招呼」次数。
 // 返回 true 表示期间收到了停止信号。
 func doPointClick(pts []Point, name, label string, isGreet bool, stop <-chan struct{}) bool {
-	if len(pts) == 0 {
-		appendLog("没有可用的点击点，跳过 %s", name)
-		setAutoState(stWaitNext)
-		return false
-	}
-
+	// nextClickPoint 只在 pts 为空时返回 ok=false，所以这里一个判断就够，
+	// 不再单独重复写一遍 len(pts)==0 的分支。
 	p, ok := nextClickPoint(pts)
 	if !ok {
 		appendLog("没有可用的点击点，跳过 %s", name)
@@ -398,7 +436,6 @@ func doPointClick(pts []Point, name, label string, isGreet bool, stop <-chan str
 	if isGreet {
 		setAutoState(stGreeting)
 	}
-	appendLog("执行%s点击：(%d,%d)", label, p.X, p.Y)
 	requestDetectUI()
 
 	// 这是最后一道闸：确认没被停止，才真的动鼠标
@@ -406,14 +443,23 @@ func doPointClick(pts []Point, name, label string, isGreet bool, stop <-chan str
 		return true
 	}
 	if err := autoClick(p.X, p.Y); err != nil {
+		// 点击失败算异常，要留痕；正常打上就不记了（进度看状态标签）
 		appendLog("%s点击失败：%s", label, err)
 	} else {
+		greeted := 0
 		if isGreet {
 			autoMu.Lock()
 			autoGreets++
+			greeted = autoGreets
 			autoMu.Unlock()
 		}
-		appendLog("%s完成：%s", label, name)
+
+		// 打到设定次数就自动收工。这里是唯一给「已打招呼」加数的地方，
+		// 所以收工判定放这儿最准：刚好打满 N 次，不会多打，也不会少打。
+		if m := autoMaxGreetsNow(); greeted > 0 && m > 0 && greeted >= m {
+			stopAuto(fmt.Sprintf("已达到打招呼次数上限 %d 次", m))
+			return true
+		}
 	}
 	return autoStopped(stop)
 }
@@ -457,14 +503,18 @@ func noteAutoOK() {
 	}
 }
 
-// updateAutoUI 刷新「自动打招呼」的状态标签。
+// updateAutoUI 刷新「自动打招呼」的两行：进度行（本次已打 / 本次剩余）+ 状态行。
 func updateAutoUI() {
 	autoMu.Lock()
 	state := autoState
 	person := autoPerson
-	greets, skips := autoGreets, autoSkips
+	greets := autoGreets
 	autoMu.Unlock()
 
+	// 进度单独占一行，跟状态行同源同频，事件一发生就刷新
+	setWindowText(hwndAutoProg, utf16ptr(greetProgressText(greets)))
+
+	// 状态行只说「在干什么、当前是谁」，数字都在上面那行
 	if state == "" {
 		setWindowText(hwndAutoStat, utf16ptr("打招呼：未开始"))
 		return
@@ -474,6 +524,5 @@ func updateAutoUI() {
 	if person != "" && state != stStopped {
 		text += "　当前：" + person
 	}
-	text += fmt.Sprintf("　已打招呼 %d / 下一页 %d", greets, skips)
 	setWindowText(hwndAutoStat, utf16ptr(text))
 }

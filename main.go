@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -30,27 +31,26 @@ const (
 	idBtnStop2      = 1025 // 停止采集下一页按钮
 	idBtnClearClks2 = 1026 // 清空下一页按钮
 	idBtnForce3     = 1027 // 采集区「强制点击下一页」：对第2组点击点做强制点击（toggle 开关）
+	idEditMaxGreet  = 1028 // 「打招呼次数上限」输入框
 )
 
 // 界面尺寸（像素）
 const (
-	btnW     = 88  // 普通按钮宽
-	btnH     = 28  // 按钮高
-	btnSH    = 64  // 小按钮（清空）宽
-	btnWRgn  = 96  // 「选择XX区域」按钮宽
-	btnWTst  = 88  // 「测试XXOCR」按钮宽
-	btnWSel2 = 108 // 「选择求职者姓名」按钮宽
-	lblH     = 18  // 标签高
-	listH    = 104
-	rltH     = 56 // OCR 结果框高
-	logH     = 84 // 日志框高
-	colX     = 16 // 左边距
-	wideW    = 390
-	topY     = 12
+	btnW    = 88 // 普通按钮宽
+	btnH    = 28 // 按钮高
+	btnWRgn = 96 // 「选择XX区域」按钮宽
+	lblH    = 18 // 标签高
+	editH   = 22 // 单行输入框高
+	listH   = 104
+	rltH    = 56 // OCR 结果框高
+	logH    = 84 // 日志框高
+	colX    = 16 // 左边距
+	wideW   = 390
+	topY    = 12
 
-	colGap    = 16                   // 两列 OCR 区域之间的间距
-	ocrColW   = (wideW - colGap) / 2 // 单列宽，约 187
-	ocrLeftX  = colX                 // 左列 x（在线状态）
+	colGap    = 16                      // 两列 OCR 区域之间的间距
+	ocrColW   = (wideW - colGap) / 2    // 单列宽，约 187
+	ocrLeftX  = colX                    // 左列 x（在线状态）
 	ocrRightX = colX + ocrColW + colGap // 右列 x（求职者姓名）
 )
 
@@ -74,10 +74,10 @@ var (
 	hwndOnlRgn    HWND
 	hwndOnlStat   HWND
 	hwndOnlText   HWND
-	hwndDetCur    HWND
-	hwndDetCnt    HWND
 	hwndLog       HWND
+	hwndAutoProg  HWND // 「本次已打 a　本次剩余 b」进度行
 	hwndAutoStat  HWND
+	hwndMaxGreet  HWND // 「打招呼次数上限」输入框
 	hwndForceBtn1 HWND
 	hwndForceBtn2 HWND
 )
@@ -106,6 +106,7 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		if !startHotkey() {
 			appendLog("紧急停止热键（Esc）安装失败，请用 [停止] 按钮")
 		}
+		loadMaxGreetsToUI()
 		updateDisplay()
 		updateDetectUI()
 		return 0
@@ -140,7 +141,13 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 			clearLog()
 			updateDetectUI()
 		case idBtnAuto:
+			syncMaxGreetsFromUI()
 			startAuto()
+		case idEditMaxGreet:
+			// 次数上限改动即时生效（运行中改也能拦住）
+			if uint16(wparam>>16) == EN_CHANGE {
+				syncMaxGreetsFromUI()
+			}
 		case idBtnAutoStop:
 			stopAuto("")
 		case idBtnForce2:
@@ -161,9 +168,8 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		return 0
 
 	case WM_APP_STOPCAP:
-		// Esc 是紧急停止：采集、检测、自动打招呼、强制点击全停掉（采集停当前激活组）
+		// Esc 是紧急停止：采集、自动打招呼、强制点击全停掉（采集停当前激活组）
 		stopCaptureFlow(0)
-		stopDetection("按了 Esc")
 		stopAuto("按了 Esc")
 		stopForceClick(0, "按了 Esc")
 		return 0
@@ -173,7 +179,7 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		onOCRReady(int(wparam))
 		return 0
 
-	// 检测/自动打招呼/强制点击等后台 goroutine 发来的刷新通知。
+	// 自动打招呼 / 强制点击等后台 goroutine 发来的刷新通知。
 	// 先认领（清标记）再刷新：这样刷新期间新攒下的请求还能再发一条消息进来，
 	// 队列里始终最多一条，不会堆积。
 	case WM_APP_DETECT:
@@ -187,7 +193,6 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 
 	case WM_DESTROY:
 		stopCapture()
-		stopDetection("")
 		stopAuto("")
 		stopForceClick(0, "")
 		postQuitMessage(0)
@@ -198,19 +203,18 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 
 // layout 记录各控件自上而下的 y 坐标。控件按顺序排，保证互不重叠。
 type layout struct {
-	capTop, capBoxRow                                int
+	capTop, capBoxRow                                 int
 	capBtnStart, capBtnStop, capBtnClear, capBtnForce int
-	capBottom                                       int
+	capBottom                                         int
 
 	// 两个 OCR 区域并排：左=在线状态，右=求职者姓名（两列共用同一套 y）
 	ocrTop, ocrBoxRow                  int
 	ocrBtnSel, ocrBtnTest, ocrBtnClear int
 	ocrStatRow, ocrBottom              int
 
-	btnDet, lblDetCur         int
-	lblDetCnt, logRow         int
-	btnAuto, lblAuto          int
-	exitRow                   int
+	btnLog, logRow       int
+	btnAuto, lblAutoProg int
+	lblAuto, exitRow     int
 }
 
 func controlY() layout {
@@ -246,17 +250,17 @@ func controlY() layout {
 	y += lblH + 12
 	l.ocrBottom = y
 
-	l.btnDet = y
-	y += btnH + 2
-	l.lblDetCur = y
-	y += lblH + 2
-	l.lblDetCnt = y
-	y += lblH + 6
+	l.btnLog = y
+	y += btnH + 6
 	l.logRow = y
 	y += logH + 12
 
+	// 「次数上限」输入框和「开始打招呼」「停止」共用这一行（控件见 createControls）
 	l.btnAuto = y
 	y += btnH + 2
+	// 进度单独占一行（本次已打 / 本次剩余），比塞在状态标签里更好认
+	l.lblAutoProg = y
+	y += lblH + 2
 	l.lblAuto = y
 	y += lblH + 10
 
@@ -294,6 +298,14 @@ func createControls(hwnd HWND) {
 			int32(x), int32(y), int32(w), int32(h),
 			hwnd, 0, hinst, 0)
 	}
+	// 单行数字输入框：只收数字、靠右显示
+	mkNumEdit := func(x, y, w, h int) HWND {
+		return createWindowEx(WS_EX_CLIENTEDGE,
+			utf16ptr("EDIT"), utf16ptr(""),
+			WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL|ES_RIGHT|ES_NUMBER,
+			int32(x), int32(y), int32(w), int32(h),
+			hwnd, HMENU(idEditMaxGreet), hinst, 0)
+	}
 
 	l := controlY()
 	all := []HWND{}
@@ -304,14 +316,14 @@ func createControls(hwnd HWND) {
 	btnStart := mkButton("开始采集打招呼按钮", idBtnStart, ocrLeftX, l.capBtnStart, ocrColW, btnH)
 	btnStop := mkButton("停止采集打招呼按钮", idBtnStop, ocrLeftX, l.capBtnStop, ocrColW, btnH)
 	btnClear := mkButton("清空打招呼按钮", idBtnClearClks, ocrLeftX, l.capBtnClear, ocrColW, btnH)
-	btnForce2 := mkButton("强制点击打招呼", idBtnForce2, ocrLeftX, l.capBtnForce, ocrColW, btnH)
+	hwndForceBtn1 = mkButton("强制点击打招呼", idBtnForce2, ocrLeftX, l.capBtnForce, ocrColW, btnH)
 
 	hwndCapStat2 = mkLabel("未采集", ocrRightX, l.capTop, ocrColW, lblH)
 	hwndCapList2 = mkReadOnly(ocrRightX, l.capBoxRow, ocrColW, listH)
 	btnStart2 := mkButton("开始采集下一页按钮", idBtnStart2, ocrRightX, l.capBtnStart, ocrColW, btnH)
 	btnStop2 := mkButton("停止采集下一页按钮", idBtnStop2, ocrRightX, l.capBtnStop, ocrColW, btnH)
 	btnClear2 := mkButton("清空下一页按钮", idBtnClearClks2, ocrRightX, l.capBtnClear, ocrColW, btnH)
-	btnForce3 := mkButton("强制点击下一页", idBtnForce3, ocrRightX, l.capBtnForce, ocrColW, btnH)
+	hwndForceBtn2 = mkButton("强制点击下一页", idBtnForce3, ocrRightX, l.capBtnForce, ocrColW, btnH)
 
 	// 左列：在线状态
 	hwndOnlRgn = mkLabel("在线状态：未设置", ocrLeftX, l.ocrTop, ocrColW, lblH)
@@ -329,35 +341,77 @@ func createControls(hwnd HWND) {
 	btnClrName := mkButton("清空", idBtnClearName, ocrRightX, l.ocrBtnClear, ocrColW, btnH)
 	hwndOcrStat = mkLabel("求职者姓名：未测试", ocrRightX, l.ocrStatRow, ocrColW, lblH)
 
-	btnClearLog := mkButton("清空日志", idBtnClearLog, colX, l.btnDet, btnW, btnH)
-	hwndDetCur = mkLabel("当前人员：未开始", colX, l.lblDetCur, wideW, lblH)
-	hwndDetCnt = mkLabel("", colX, l.lblDetCnt, wideW, lblH)
+	btnClearLog := mkButton("清空日志", idBtnClearLog, colX, l.btnLog, btnW, btnH)
 	hwndLog = mkReadOnly(colX, l.logRow, wideW, logH)
 
-	btnAuto := mkButton("开始打招呼", idBtnAuto, colX, l.btnAuto, btnWRgn, btnH)
-	btnAutoStop := mkButton("停止", idBtnAutoStop, colX+btnWRgn+6, l.btnAuto, btnW, btnH)
-	hwndAutoStat = mkLabel("打招呼：未开始", colX, l.lblAuto, wideW, lblH)
+	// 打招呼次数上限：和「开始打招呼」同一行，放在按钮左边
+	lblMaxTitle := mkLabel("次数上限", colX, l.btnAuto+5, 60, lblH)
+	hwndMaxGreet = mkNumEdit(colX+64, l.btnAuto+3, 46, editH)
+	sendMessage(hwndMaxGreet, EM_SETLIMITTEXT, 6, 0)
+	lblMaxHint := mkLabel("0=不限", colX+312, l.btnAuto+5, wideW-312, lblH)
 
-	hwndForceBtn1 = btnForce2
-	hwndForceBtn2 = btnForce3
+	btnAuto := mkButton("开始打招呼", idBtnAuto, colX+116, l.btnAuto, btnWRgn, btnH)
+	btnAutoStop := mkButton("停止", idBtnAutoStop, colX+116+btnWRgn+6, l.btnAuto, btnW, btnH)
+	hwndAutoProg = mkLabel("本次已打 0　本次剩余 不限", colX, l.lblAutoProg, wideW, lblH)
+	hwndAutoStat = mkLabel("打招呼：未开始", colX, l.lblAuto, wideW, lblH)
 
 	btnExit := mkButton("退出", idBtnExit, colX, l.exitRow, btnW, btnH)
 
-	all = append(all, btnStart, btnStop, btnClear, btnForce2,
-		btnStart2, btnStop2, btnClear2, btnForce3,
+	all = append(all, btnStart, btnStop, btnClear, hwndForceBtn1,
+		btnStart2, btnStop2, btnClear2, hwndForceBtn2,
 		btnSelName, btnTestName, btnClrName, btnSelOnl, btnTestOnl, btnClrOnl,
 		btnClearLog, btnAuto, btnAutoStop,
 		btnExit,
 		hwndCapStat1, hwndCapList1, hwndCapStat2, hwndCapList2,
 		hwndNameRgn, hwndOcrStat, hwndOcrText,
 		hwndOnlRgn, hwndOnlStat, hwndOnlText,
-		hwndDetCur, hwndDetCnt, hwndLog, hwndAutoStat)
+		hwndLog, hwndAutoStat, hwndAutoProg,
+		lblMaxTitle, hwndMaxGreet, lblMaxHint)
 
 	if font != 0 {
 		for _, h := range all {
 			sendMessage(h, WM_SETFONT, font, 1)
 		}
 	}
+}
+
+// ---- 打招呼次数上限（输入框 ↔ 配置 ↔ 后台循环）----
+
+// parseEditInt 读输入框里的非负整数；空着或读不出数字都按 0（不限）处理。
+func parseEditInt(hwnd HWND) int {
+	if hwnd == 0 {
+		return 0
+	}
+	buf := make([]uint16, 24)
+	n := getWindowText(hwnd, &buf[0], len(buf))
+	if n <= 0 {
+		return 0
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(syscall.UTF16ToString(buf[:n])))
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
+}
+
+// loadMaxGreetsToUI 启动时把配置里的次数上限填进输入框。
+func loadMaxGreetsToUI() {
+	if cfg.MaxGreets > 0 {
+		setWindowText(hwndMaxGreet, utf16ptr(strconv.Itoa(cfg.MaxGreets)))
+	}
+	setAutoMaxGreets(cfg.MaxGreets)
+}
+
+// syncMaxGreetsFromUI 把输入框里的次数上限同步到内存配置并落盘。
+// 改动即时生效：后台循环每次要打招呼前都会重新读一次，运行中调小也能立刻拦住。
+func syncMaxGreetsFromUI() {
+	n := parseEditInt(hwndMaxGreet)
+	setAutoMaxGreets(n)
+	if n != cfg.MaxGreets {
+		cfg.MaxGreets = n
+		_ = saveConfig(cfg)
+	}
+	requestDetectUI() // 让「已打招呼 X / 上限 Y」跟着刷新
 }
 
 // ---- 点击点采集（支持两组，各自独立）----
@@ -695,44 +749,11 @@ func updateOCRDisplay(kind int) {
 	setWindowText(box, utf16ptr(st.text))
 }
 
-// updateDetectUI 刷新「人员变化检测」那部分的标签和日志框。
+// updateDetectUI 刷新日志框和「自动打招呼 / 强制点击」的状态显示。
+//
+// 名字里的 Detect 是历史原因（它由 WM_APP_DETECT 消息驱动），独立的「人员变化检测」
+// 功能已经删除，现在它只负责：日志框 + 自动打招呼两行 + 强制点击按钮文案。
 func updateDetectUI() {
-	detMu.Lock()
-	running := detRunning
-	cur := detCurrent
-	pending := detPending
-	pendingN := detPendingN
-	samples := detSamples
-	changes := detChanges
-	detMu.Unlock()
-
-	label := "当前人员："
-	switch {
-	case cur != "":
-		label += cur
-	case running:
-		label += "等待人员…"
-	case samples > 0:
-		label += "未识别到"
-	default:
-		label += "未开始"
-	}
-	if !running && samples > 0 {
-		label += "（已停止）"
-	}
-	if pending != "" {
-		label += fmt.Sprintf("　　待确认：%s %d/%d", pending, pendingN, detectConfirm)
-	}
-	setWindowText(hwndDetCur, utf16ptr(label))
-
-	state := "已停止"
-	if running {
-		state = "检测中"
-	}
-	setWindowText(hwndDetCnt, utf16ptr(fmt.Sprintf(
-		"累计识别 %d 次 ｜ 确认换人 %d 次 ｜ 轮询 %dms / 连续 %d 次确认 ｜ %s",
-		samples, changes, detectInterval.Milliseconds(), detectConfirm, state)))
-
 	setWindowText(hwndLog, utf16ptr(logText()))
 	scrollEditToEnd(hwndLog)
 	updateAutoUI()
@@ -787,7 +808,7 @@ func main() {
 	hwndMain = createWindowEx(
 		0,
 		utf16ptr("BossHelperMainClass"),
-		utf16ptr("Boss Helper V0.6"),
+		utf16ptr("Boss Helper V0.7"),
 		WS_OVERLAPPEDWINDOW,
 		100, 80, rc.Right-rc.Left, rc.Bottom-rc.Top,
 		0, 0, hinst, 0)

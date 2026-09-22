@@ -210,7 +210,6 @@ const (
 
 	asyncStatusCompleted = 1
 	asyncStatusCanceled  = 2
-	asyncStatusError     = 3
 )
 
 type winOCREngine struct {

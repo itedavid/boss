@@ -20,7 +20,6 @@ var (
 	capturing    bool // 钩子是否已安装（主线程读写）
 	captureGroup int  // 当前正在采集的组：1 / 2，0 表示没有
 
-	hotkeyHook     uintptr
 	hotkeyThreadID uint32
 	hotkeyRunning  bool
 
@@ -44,7 +43,6 @@ func startHotkey() bool {
 			ready <- 0
 			return
 		}
-		hotkeyHook = h
 
 		// 先摸一下消息队列，保证后面线程消息能投进来
 		var m MSG
@@ -58,7 +56,6 @@ func startHotkey() bool {
 		}
 
 		unhookWindowsHookEx(h)
-		hotkeyHook = 0
 	}()
 
 	tid := <-ready

@@ -14,7 +14,6 @@ const (
 	WM_APP_OCR     = WM_APP + 3 // OCR 后台 goroutine -> 主线程：识别完成
 	WM_APP_DETECT  = WM_APP + 4 // 后台 goroutine -> 主线程：状态有变化，刷新界面
 
-	WM_CLOSE      = 0x0010
 	WM_SYSKEYDOWN = 0x0104
 
 	WH_KEYBOARD_LL = 13

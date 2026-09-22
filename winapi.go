@@ -34,6 +34,8 @@ const (
 	BS_PUSHBUTTON       = 0x00000000
 	ES_MULTILINE        = 0x0004
 	ES_READONLY         = 0x0800
+	ES_AUTOHSCROLL      = 0x0080
+	ES_RIGHT            = 0x0002
 	WS_VSCROLL          = 0x00200000
 	ES_AUTOVSCROLL      = 0x0040
 	SW_SHOW             = 5
@@ -58,6 +60,9 @@ const (
 	SRCCOPY             = 0x00CC0020
 	EM_SETSEL           = 0x00B1
 	EM_SCROLLCARET      = 0x00B7
+	EM_SETLIMITTEXT     = 0x00C5 // EDIT 最多允许输入的字符数
+	ES_NUMBER           = 0x2000 // EDIT 只接受数字
+	EN_CHANGE           = 0x0300 // EDIT 内容改变通知
 )
 
 // ----- 结构（字段顺序/类型必须与 Windows 原生布局一致）-----
@@ -146,6 +151,7 @@ var (
 	procLoadCursorW               = modUser32.NewProc("LoadCursorW")
 	procDestroyWindow             = modUser32.NewProc("DestroyWindow")
 	procSetWindowTextW            = modUser32.NewProc("SetWindowTextW")
+	procGetWindowTextW            = modUser32.NewProc("GetWindowTextW")
 	procSendMessageW              = modUser32.NewProc("SendMessageW")
 	procGetSystemMetrics          = modUser32.NewProc("GetSystemMetrics")
 	procUpdateLayeredWindow       = modUser32.NewProc("UpdateLayeredWindow")
@@ -252,6 +258,12 @@ func destroyWindow(hwnd HWND) bool {
 
 func setWindowText(hwnd HWND, text *uint16) {
 	procSetWindowTextW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(text)))
+}
+
+// getWindowText 读出控件上的文字（截断到 maxCount-1 个字符）。
+func getWindowText(hwnd HWND, buf *uint16, maxCount int) int {
+	r, _, _ := procGetWindowTextW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(buf)), uintptr(maxCount))
+	return int(r)
 }
 
 // scrollEditToEnd 把只读 EDIT 的光标放到末尾，让它自动滚到最新一行。

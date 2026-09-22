@@ -10,16 +10,16 @@ package main
 import "math"
 
 const (
-	inkPadPx     = 3    // 裁到文字后四周留的空
-	padPx        = 8    // 放大后补的边，字贴着边 OCR 容易漏
-	ocrTargetH   = 40   // 希望文字放大到的高度（Windows OCR 对 30~60 像素最擅长）
-	ocrMaxScale  = 6    // 最多放大倍数
-	inkThreshold = 48   // 和背景的色差超过多少算「有笔迹」
-	inkAnyThr    = 24   // 比 inkThreshold 松，只用来判断「这块区域里到底有没有字」
-	inkMinPixels = 6    // 笔迹像素少于这个数就当作没有字
-	inkMaxRatio  = 0.92 // 笔迹框占整张图的比例超过它就说明背景不干净，别裁
-	darkBgLum    = 110  // 背景亮度低于这个值就认为这是深色底，自动反色
-	stretchTrigger = 150 // 字与底的亮度差小于这个值才做对比度拉伸（差得够大就别动）
+	inkPadPx       = 3    // 裁到文字后四周留的空
+	padPx          = 8    // 放大后补的边，字贴着边 OCR 容易漏
+	ocrTargetH     = 40   // 希望文字放大到的高度（Windows OCR 对 30~60 像素最擅长）
+	ocrMaxScale    = 6    // 最多放大倍数
+	inkThreshold   = 48   // 和背景的色差超过多少算「有笔迹」
+	inkAnyThr      = 24   // 比 inkThreshold 松，只用来判断「这块区域里到底有没有字」
+	inkMinPixels   = 6    // 笔迹像素少于这个数就当作没有字
+	inkMaxRatio    = 0.92 // 笔迹框占整张图的比例超过它就说明背景不干净，别裁
+	darkBgLum      = 110  // 背景亮度低于这个值就认为这是深色底，自动反色
+	stretchTrigger = 150  // 字与底的亮度差小于这个值才做对比度拉伸（差得够大就别动）
 )
 
 // subImage 抠出 [x0,y0)-(x1,y1) 这块，返回新位图（alpha 统一 255）。

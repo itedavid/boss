@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	forceMinMs        = 800 // 两次点击之间的最短间隔
-	forceJitterMs     = 300 // 在最短间隔上再随机加 0~1000ms，凑成 2~3 秒
+	forceMinMs        = 800  // 两次点击之间的最短间隔
+	forceJitterMs     = 300  // 在最短间隔上再随机加 0~1000ms，凑成 2~3 秒
 	forceLongChance   = 20   // 每 100 次里大约有 20 次会多停一下
 	forceLongMinMs    = 1200 // 那次额外的停顿：1.2~4.2 秒
 	forceLongJitterMs = 3000
@@ -26,10 +26,8 @@ var (
 	forceMu      sync.Mutex
 	forceRunning bool
 	forceStopCh  chan struct{}
-	forceCount   int  // 本次已经点了多少次
-	forceStarted bool // 是否启动过
-	forceLastPt  int  // 上一次用的点下标，用来避免连续两次点同一个点
-	forceGroup   int  // 当前强制点击用的是第几组点击点（1/2），0 表示没在跑
+	forceLastPt  int // 上一次用的点下标，用来避免连续两次点同一个点
+	forceGroup   int // 当前强制点击用的是第几组点击点（1/2），0 表示没在跑
 )
 
 // startForceClick 开始某一组的强制点击（group=1/2），用对应组已采集的点击点。
@@ -60,23 +58,20 @@ func startForceClick(group int) {
 
 	stop := make(chan struct{})
 	forceRunning = true
-	forceStarted = true
 	forceStopCh = stop
-	forceCount = 0
 	forceLastPt = -1
 	forceGroup = group
 	// 配置先快照一份给后台，避免和主线程写配置打架
 	points := append([]Point(nil), pts...)
 	forceMu.Unlock()
 
-	// 打招呼、区域检测、点击点采集都会和强制点击抢鼠标，先停掉
+	// 打招呼、点击点采集都会和强制点击抢鼠标，先停掉
 	autoMu.Lock()
 	autoBusy := autoRunning
 	autoMu.Unlock()
 	if autoBusy {
 		stopAuto("开始强制点击")
 	}
-	stopDetection("开始强制点击")
 	if capturing {
 		stopCaptureFlow(0)
 		appendLog("强制点击%s 期间已停止采集，避免把自动点击记成采集点", groupName(group))
@@ -199,9 +194,6 @@ func forceLoop(points []Point, stop <-chan struct{}) {
 		if err := forceClickFn(p); err != nil {
 			appendLog("强制点击失败：%s", err)
 		} else {
-			forceMu.Lock()
-			forceCount++
-			forceMu.Unlock()
 			appendLog("强制点击：(%d,%d)", p.X, p.Y)
 		}
 		requestDetectUI()

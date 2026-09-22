@@ -25,10 +25,11 @@ type Point struct {
 
 // Config 是 config.json 的内存结构。
 type Config struct {
-	NameRegion   Rect     `json:"name_region"`
-	OnlineRegion Rect     `json:"online_region"`
-	ClickPoints  []Point  `json:"click_points"`  // 组1：打招呼按钮的点击点
-	ClickPoints2 []Point  `json:"click_points2"` // 组2：下一页按钮的点击点
+	NameRegion   Rect    `json:"name_region"`
+	OnlineRegion Rect    `json:"online_region"`
+	ClickPoints  []Point `json:"click_points"`  // 组1：打招呼按钮的点击点
+	ClickPoints2 []Point `json:"click_points2"` // 组2：下一页按钮的点击点
+	MaxGreets    int     `json:"max_greets"`    // 本轮最多打多少次招呼，0 = 不限
 }
 
 const configFileName = "config.json"
