@@ -33,6 +33,7 @@ const (
 	idBtnForce3     = 1027 // 采集区「强制点击下一页」：对第2组点击点做强制点击（toggle 开关）
 	idEditMaxGreet  = 1028 // 「打招呼次数上限」输入框
 	idBtnTop        = 1029 // 窗口置顶切换按钮（右上角）
+	idSign          = 1030 // 右下角署名标签（点击切换文本，纯彩蛋）
 )
 
 // 界面尺寸（像素）
@@ -83,6 +84,7 @@ var (
 	hwndForceBtn2 HWND
 	hwndTopBtn    HWND // 右上角「窗口置顶」切换按钮
 	topMostOn     bool // 当前是否置顶（界面与窗口状态同步）
+	hwndSign      HWND // 右下角署名标签
 )
 
 // ocrState 是一次识别的结果。
@@ -166,6 +168,9 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 			destroyWindow(hwnd)
 		case idBtnTop:
 			toggleTopMost()
+		case idSign:
+			// 右下角署名彩蛋：点一下从 "WSQ" 变成 "i love you"
+			setWindowText(hwndSign, utf16ptr("i love you"))
 		}
 		return 0
 
@@ -377,6 +382,14 @@ func createControls(hwnd HWND) {
 
 	btnExit := mkButton("退出", idBtnExit, colX, l.exitRow, btnW, btnH)
 
+	// 右下角署名（开发者标记；稍大字号；点击会变成 "i love you"，纯彩蛋）
+	signFont := createFont(-19, "Microsoft YaHei") // 比默认 GUI 字体（约 11pt）大，约 14pt
+	hwndSign = createWindowEx(0,
+		utf16ptr("STATIC"), utf16ptr("WSQ"),
+		WS_CHILD|WS_VISIBLE|SS_RIGHT|SS_NOTIFY,
+		int32(colX+wideW-140), int32(l.exitRow+2), 140, 24,
+		hwnd, idSign, hinst, 0)
+
 	// 顶部右上角「窗口置顶」切换按钮（标题在「置顶」↔「已置顶·点此取消」间切换）
 	btnTop := mkButton("置顶", idBtnTop, colX+wideW-140, l.topBtnRow, 140, btnH)
 
@@ -390,12 +403,17 @@ func createControls(hwnd HWND) {
 		hwndNameRgn, hwndOcrStat, hwndOcrText,
 		hwndOnlRgn, hwndOnlStat, hwndOnlText,
 		hwndLog, hwndAutoStat, hwndAutoProg,
-		lblMaxTitle, hwndMaxGreet, lblMaxHint)
+		lblMaxTitle, hwndMaxGreet, lblMaxHint,
+		hwndSign)
 
 	if font != 0 {
 		for _, h := range all {
 			sendMessage(h, WM_SETFONT, font, 1)
 		}
+	}
+	// 署名字体单独放大（覆盖上面统一字体的设置）
+	if signFont != 0 {
+		sendMessage(hwndSign, WM_SETFONT, signFont, 1)
 	}
 }
 
@@ -859,7 +877,7 @@ func main() {
 	hwndMain = createWindowEx(
 		0,
 		utf16ptr("BossHelperMainClass"),
-		utf16ptr("Boss Helper V0.8"),
+		utf16ptr("CML_Bespoke_BossHelper_V0.8"),
 		WS_OVERLAPPEDWINDOW,
 		100, 80, rc.Right-rc.Left, rc.Bottom-rc.Top,
 		0, 0, hinst, 0)

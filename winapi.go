@@ -59,6 +59,8 @@ const (
 	COLOR_BTNFACE       = 15
 	WM_CTLCOLORSTATIC   = 0x0138
 	SS_LEFT             = 0x00000000
+	SS_RIGHT            = 0x00000002
+	SS_NOTIFY           = 0x00000001 // 静态控件被点击时向父窗口发 STN_CLICKED
 	SRCCOPY             = 0x00CC0020
 	EM_SETSEL           = 0x00B1
 	EM_SCROLLCARET      = 0x00B7
@@ -188,6 +190,7 @@ var (
 	procSelectObject     = modGdi32.NewProc("SelectObject")
 	procDeleteDC         = modGdi32.NewProc("DeleteDC")
 	procDeleteObject     = modGdi32.NewProc("DeleteObject")
+	procCreateFontW      = modGdi32.NewProc("CreateFontW")
 )
 
 // utf16ptr 生成 Windows API 所需的 UTF-16 字符串指针（支持中文）。
@@ -321,6 +324,28 @@ func getSystemMetrics(index int) int {
 
 func getStockObject(index int) uintptr {
 	r, _, _ := procGetStockObject.Call(uintptr(index))
+	return r
+}
+
+// createFont 创建一个指定像素高度的字体；height 用负值表示字符高度（像素，例如 -19 ≈ 14pt）。
+// face 传 "" 使用系统默认字体；传具体字族（如 "Microsoft YaHei"）可确保中文正常显示。
+func createFont(height int, face string) uintptr {
+	r, _, _ := procCreateFontW.Call(
+		uintptr(height), // cHeight（负=像素高度）
+		0,               // cWidth
+		0,               // cEscapement
+		0,               // cOrientation
+		0,               // cWeight（0=默认 FW_DONTCARE）
+		0,               // bItalic
+		0,               // bUnderline
+		0,               // bStrikeOut
+		1,               // iCharSet（ANSI_CHARSET=1）
+		0,               // iOutPrecision
+		0,               // iClipPrecision
+		0,               // iQuality
+		0,               // iPitchAndFamily
+		uintptr(unsafe.Pointer(utf16ptr(face))),
+	)
 	return r
 }
 
