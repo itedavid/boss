@@ -33,7 +33,7 @@ const (
 	idBtnForce3     = 1027 // 采集区「强制点击下一页」：对第2组点击点做强制点击（toggle 开关）
 	idEditMaxGreet  = 1028 // 「打招呼次数上限」输入框
 	idBtnTop        = 1029 // 窗口置顶切换按钮（右上角）
-	idSign          = 1030 // 右下角署名标签（点击切换文本，纯彩蛋）
+	idSign          = 1030 // 右下角署名标签（点击在 WSQ 与 i love you 间切换，纯彩蛋）
 )
 
 // 界面尺寸（像素）
@@ -85,6 +85,7 @@ var (
 	hwndTopBtn    HWND // 右上角「窗口置顶」切换按钮
 	topMostOn     bool // 当前是否置顶（界面与窗口状态同步）
 	hwndSign      HWND // 右下角署名标签
+	signLove      bool // 署名彩蛋切换状态：false=显示署名 WSQ，true=显示 "i love you"
 )
 
 // ocrState 是一次识别的结果。
@@ -169,8 +170,14 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		case idBtnTop:
 			toggleTopMost()
 		case idSign:
-			// 右下角署名彩蛋：点一下从 "WSQ" 变成 "i love you"
-			setWindowText(hwndSign, utf16ptr("i love you"))
+			// 右下角署名彩蛋：在署名 "WSQ" 与 "i love you" 之间来回切换
+			if signLove {
+				setWindowText(hwndSign, utf16ptr("WSQ"))
+				signLove = false
+			} else {
+				setWindowText(hwndSign, utf16ptr("i love you"))
+				signLove = true
+			}
 		}
 		return 0
 
@@ -383,7 +390,7 @@ func createControls(hwnd HWND) {
 
 	btnExit := mkButton("退出", idBtnExit, colX, l.exitRow, btnW, btnH)
 
-	// 右下角署名（开发者标记；稍大字号；点击会变成 "i love you"，纯彩蛋）
+	// 右下角署名（开发者标记；稍大字号；点击在 "WSQ" 与 "i love you" 之间切换，纯彩蛋）
 	signFont := createFont(-19, "Microsoft YaHei") // 比默认 GUI 字体（约 11pt）大，约 14pt
 	hwndSign = createWindowEx(0,
 		utf16ptr("STATIC"), utf16ptr("WSQ"),
