@@ -8,11 +8,12 @@ package main
 import "unsafe"
 
 const (
-	WM_APP         = 0x8000
-	WM_APP_CLICK   = WM_APP + 1 // 钩子线程 -> 主线程：采集到一个点击点
-	WM_APP_STOPCAP = WM_APP + 2 // 钩子线程 -> 主线程：用户按了 Esc
-	WM_APP_OCR     = WM_APP + 3 // OCR 后台 goroutine -> 主线程：识别完成
-	WM_APP_DETECT  = WM_APP + 4 // 后台 goroutine -> 主线程：状态有变化，刷新界面
+	WM_APP          = 0x8000
+	WM_APP_CLICK    = WM_APP + 1 // 钩子线程 -> 主线程：采集到一个点击点
+	WM_APP_STOPCAP  = WM_APP + 2 // 钩子线程 -> 主线程：用户按了 Esc
+	WM_APP_OCR      = WM_APP + 3 // OCR 后台 goroutine -> 主线程：识别完成
+	WM_APP_DETECT   = WM_APP + 4 // 后台 goroutine -> 主线程：状态有变化，刷新界面
+	WM_APP_STOPAUTO = WM_APP + 5 // 钩子线程 -> 主线程：用户按了 Ctrl+C，停自动化（自动打招呼 + 强制点击），不动采集
 
 	WM_SYSKEYDOWN = 0x0104
 

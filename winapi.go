@@ -54,6 +54,8 @@ const (
 	AC_SRC_ALPHA        = 1
 	ULW_ALPHA           = 2
 	VK_ESCAPE           = 0x1B
+	VK_CONTROL          = 0x11 // Ctrl（左右通用）
+	VK_C                = 0x43 // 字母 C
 	COLOR_BTNFACE       = 15
 	WM_CTLCOLORSTATIC   = 0x0138
 	SS_LEFT             = 0x00000000
@@ -63,6 +65,14 @@ const (
 	EM_SETLIMITTEXT     = 0x00C5 // EDIT 最多允许输入的字符数
 	ES_NUMBER           = 0x2000 // EDIT 只接受数字
 	EN_CHANGE           = 0x0300 // EDIT 内容改变通知
+	SWP_NOSIZE          = 0x0001 // SetWindowPos：保留当前尺寸
+	SWP_NOMOVE          = 0x0002 // SetWindowPos：保留当前位置
+)
+
+// 两个特殊的 HWND 插入点：置顶 / 取消置顶。Win32 定义为 (HWND)-1 / (HWND)-2。
+var (
+	hwndTopMost   = ^uintptr(0)     // HWND_TOPMOST = (HWND)-1
+	hwndNoTopMost = ^uintptr(0) - 1 // HWND_NOTOPMOST = (HWND)-2
 )
 
 // ----- 结构（字段顺序/类型必须与 Windows 原生布局一致）-----
@@ -163,6 +173,8 @@ var (
 	procReleaseCapture            = modUser32.NewProc("ReleaseCapture")
 	procGetSysColorBrush          = modUser32.NewProc("GetSysColorBrush")
 	procAdjustWindowRect          = modUser32.NewProc("AdjustWindowRect")
+	procSetWindowPos              = modUser32.NewProc("SetWindowPos")
+	procGetAsyncKeyState          = modUser32.NewProc("GetAsyncKeyState")
 
 	procGetModuleHandleW = modKernel32.NewProc("GetModuleHandleW")
 
@@ -222,6 +234,27 @@ func showWindow(hwnd HWND, cmd int) {
 
 func updateWindow(hwnd HWND) {
 	procUpdateWindow.Call(uintptr(hwnd))
+}
+
+// setWindowPos 包 Win32 SetWindowPos。这里只用它来切换置顶：
+// insertAfter 传 hwndTopMost / hwndNoTopMost，配合 SWP_NOMOVE|SWP_NOSIZE 即不改变位置与尺寸。
+func setWindowPos(hwnd HWND, insertAfter uintptr, x, y, cx, cy int32, flags uint32) bool {
+	r, _, _ := procSetWindowPos.Call(
+		uintptr(hwnd), insertAfter,
+		uintptr(x), uintptr(y), uintptr(cx), uintptr(cy), uintptr(flags))
+	return r != 0
+}
+
+// getAsyncKeyState 查某个虚拟键当前的物理按下状态。
+// 返回值最高位为 1 表示"正按着"（Go 里 int16 为负）。
+func getAsyncKeyState(vk int) int16 {
+	r, _, _ := procGetAsyncKeyState.Call(uintptr(vk))
+	return int16(r)
+}
+
+// ctrlDown 判断 Ctrl 是否正被按住（左右 Ctrl 都算）。
+func ctrlDown() bool {
+	return getAsyncKeyState(VK_CONTROL) < 0
 }
 
 func getMessage(msg *MSG) int {

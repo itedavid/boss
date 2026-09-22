@@ -27,7 +27,8 @@ var (
 	clickQueues [2][]Point // 两组点击点队列，下标 0=打招呼按钮，1=下一页按钮
 )
 
-// startHotkey 永久安装全局键盘钩子，只为「按 Esc 紧急停止」。
+// startHotkey 永久安装全局键盘钩子，提供两个热键：
+// Esc=紧急停止（含采集），Ctrl+C=只停自动化（自动打招呼 + 强制点击）。
 // 独立线程 + 自己的消息循环；低级钩子靠安装它的线程抽消息来派发。
 func startHotkey() bool {
 	if hotkeyRunning {
@@ -156,12 +157,23 @@ func lowLevelMouseProc(nCode int32, wparam, lparam uintptr) uintptr {
 	return callNextHookEx(nCode, wparam, lparam)
 }
 
-// lowLevelKeyboardProc 只为「按 Esc 紧急停止」，不吞按键。
+// lowLevelKeyboardProc 处理两个全局热键，都不吞按键（照常放行给前台程序）：
+//   - Esc   ：紧急停止——采集 + 自动打招呼 + 强制点击全停（WM_APP_STOPCAP）
+//   - Ctrl+C：只停自动化——自动打招呼 + 强制点击，不动采集（WM_APP_STOPAUTO）
 func lowLevelKeyboardProc(nCode int32, wparam, lparam uintptr) uintptr {
 	if nCode >= 0 && (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN) {
 		kb := (*KBDLLHOOKSTRUCT)(uintptrToPointer(lparam))
-		if kb.VkCode == VK_ESCAPE && hwndMain != 0 {
-			postMessage(hwndMain, WM_APP_STOPCAP, 0, 0)
+		if hwndMain != 0 {
+			switch kb.VkCode {
+			case VK_ESCAPE:
+				postMessage(hwndMain, WM_APP_STOPCAP, 0, 0)
+			case VK_C:
+				// 只认「Ctrl 按住时按下的 C」；单独按 C 不管。
+				// 不吞键：Ctrl+C 仍然会送到前台程序，复制功能不受影响。
+				if ctrlDown() {
+					postMessage(hwndMain, WM_APP_STOPAUTO, 0, 0)
+				}
+			}
 		}
 	}
 	return callNextHookEx(nCode, wparam, lparam)

@@ -30,6 +30,7 @@ type Config struct {
 	ClickPoints  []Point `json:"click_points"`  // 组1：打招呼按钮的点击点
 	ClickPoints2 []Point `json:"click_points2"` // 组2：下一页按钮的点击点
 	MaxGreets    int     `json:"max_greets"`    // 本轮最多打多少次招呼，0 = 不限
+	TopMost      bool    `json:"topmost"`       // 主窗口是否置顶，默认开启
 }
 
 const configFileName = "config.json"
@@ -55,6 +56,9 @@ func configPath() string {
 // loadConfig 读取 config.json；文件不存在或损坏时返回零值配置。
 func loadConfig() Config {
 	var cfg Config
+	// 前置默认值：缺省置顶。config.json 里没写、或写了 false 都按"关"处理，
+	// 只有显式 false 才会关；新建配置（无该字段）自动就是置顶。
+	cfg.TopMost = true
 	data, err := os.ReadFile(configPath())
 	if err == nil {
 		_ = json.Unmarshal(data, &cfg)

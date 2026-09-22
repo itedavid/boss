@@ -32,6 +32,7 @@ const (
 	idBtnClearClks2 = 1026 // 清空下一页按钮
 	idBtnForce3     = 1027 // 采集区「强制点击下一页」：对第2组点击点做强制点击（toggle 开关）
 	idEditMaxGreet  = 1028 // 「打招呼次数上限」输入框
+	idBtnTop        = 1029 // 窗口置顶切换按钮（右上角）
 )
 
 // 界面尺寸（像素）
@@ -80,6 +81,8 @@ var (
 	hwndMaxGreet  HWND // 「打招呼次数上限」输入框
 	hwndForceBtn1 HWND
 	hwndForceBtn2 HWND
+	hwndTopBtn    HWND // 右上角「窗口置顶」切换按钮
+	topMostOn     bool // 当前是否置顶（界面与窗口状态同步）
 )
 
 // ocrState 是一次识别的结果。
@@ -104,9 +107,14 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		createControls(hwnd)
 		appendLog("程序启动，配置：%s", configPath())
 		if !startHotkey() {
-			appendLog("紧急停止热键（Esc）安装失败，请用 [停止] 按钮")
+			appendLog("全局热键安装失败，请用界面上的 [停止] 按钮")
+		} else {
+			appendLog("全局热键：Esc=全部停止，Ctrl+C=只停自动化")
 		}
 		loadMaxGreetsToUI()
+		// 置顶：按配置初始化（默认开启，见 config.go loadConfig）
+		topMostOn = cfg.TopMost
+		applyTopMost()
 		updateDisplay()
 		updateDetectUI()
 		return 0
@@ -156,6 +164,8 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 			toggleForceClick(2)
 		case idBtnExit:
 			destroyWindow(hwnd)
+		case idBtnTop:
+			toggleTopMost()
 		}
 		return 0
 
@@ -172,6 +182,12 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		stopCaptureFlow(0)
 		stopAuto("按了 Esc")
 		stopForceClick(0, "按了 Esc")
+		return 0
+
+	case WM_APP_STOPAUTO:
+		// Ctrl+C：只打断自动化——自动打招呼 + 强制点击（强制翻页），不碰采集
+		stopAuto("按了 Ctrl+C")
+		stopForceClick(0, "按了 Ctrl+C")
 		return 0
 
 	// OCR 后台 goroutine 发来的通知（wparam = 任务类型）
@@ -215,11 +231,15 @@ type layout struct {
 	btnLog, logRow       int
 	btnAuto, lblAutoProg int
 	lblAuto, exitRow     int
+	topBtnRow            int // 顶部「窗口置顶」按钮所在行
 }
 
 func controlY() layout {
 	var l layout
 	y := topY
+	// 顶部「窗口置顶」按钮独占一行（靠右），其余控件在其下方
+	l.topBtnRow = y
+	y += btnH + 4
 	// 采集区：打招呼按钮 / 下一页按钮 两列并排
 	l.capTop = y
 	y += lblH + 4
@@ -357,7 +377,11 @@ func createControls(hwnd HWND) {
 
 	btnExit := mkButton("退出", idBtnExit, colX, l.exitRow, btnW, btnH)
 
+	// 顶部右上角「窗口置顶」切换按钮（标题在「置顶」↔「已置顶·点此取消」间切换）
+	btnTop := mkButton("置顶", idBtnTop, colX+wideW-140, l.topBtnRow, 140, btnH)
+
 	all = append(all, btnStart, btnStop, btnClear, hwndForceBtn1,
+		btnTop,
 		btnStart2, btnStop2, btnClear2, hwndForceBtn2,
 		btnSelName, btnTestName, btnClrName, btnSelOnl, btnTestOnl, btnClrOnl,
 		btnClearLog, btnAuto, btnAutoStop,
@@ -412,6 +436,33 @@ func syncMaxGreetsFromUI() {
 		_ = saveConfig(cfg)
 	}
 	requestDetectUI() // 让「已打招呼 X / 上限 Y」跟着刷新
+}
+
+// ---- 窗口置顶 ----
+
+// applyTopMost 把 topMostOn 的当前值同步到窗口层级与按钮标题。
+func applyTopMost() {
+	if hwndMain == 0 {
+		return
+	}
+	after := hwndNoTopMost
+	caption := "置顶"
+	if topMostOn {
+		after = hwndTopMost
+		caption = "已置顶·点此取消"
+	}
+	setWindowPos(hwndMain, after, 0, 0, 0, 0, SWP_NOMOVE|SWP_NOSIZE)
+	if hwndTopBtn != 0 {
+		setWindowText(hwndTopBtn, utf16ptr(caption))
+	}
+}
+
+// toggleTopMost 点击右上角按钮时切换置顶，并写入配置（下次启动保持）。
+func toggleTopMost() {
+	topMostOn = !topMostOn
+	applyTopMost()
+	cfg.TopMost = topMostOn
+	_ = saveConfig(cfg)
 }
 
 // ---- 点击点采集（支持两组，各自独立）----
@@ -808,7 +859,7 @@ func main() {
 	hwndMain = createWindowEx(
 		0,
 		utf16ptr("BossHelperMainClass"),
-		utf16ptr("Boss Helper V0.7"),
+		utf16ptr("Boss Helper V0.8"),
 		WS_OVERLAPPEDWINDOW,
 		100, 80, rc.Right-rc.Left, rc.Bottom-rc.Top,
 		0, 0, hinst, 0)
