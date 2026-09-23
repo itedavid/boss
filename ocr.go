@@ -5,6 +5,7 @@
 package main
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"sync"
@@ -115,6 +116,8 @@ func recognizeBitmap(img *Bitmap) (string, error) {
 // WinRT/COM 有「线程套间」的概念，引擎在同一线程上创建和使用最稳妥，
 // 所以这里锁一条 OS 线程，引擎只在这里创建和调用。
 func ocrLoop() {
+	// OCR 线程整体也兜一层：万一连 recover 都兜不住（极少见），至少留下崩溃记录。
+	defer guard("ocrLoop")
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -129,11 +132,24 @@ func ocrLoop() {
 				eng = e
 			}
 		}
-		if initErr != nil {
-			job.err = initErr
-		} else {
-			job.text, job.err = eng.Recognize(job.img)
-		}
-		close(job.done)
+		// 单个任务单独兜 panic：一张有问题的截图不该崩掉整条 OCR 线程，
+		// 更不能让调用方在 <-job.done 上永远卡住（那会表现成界面卡死）。
+		runOCRJob(eng, initErr, job)
 	}
+}
+
+// runOCRJob 处理一个 OCR 任务，保证无论如何 job.done 都会被关闭。
+func runOCRJob(eng OCR, initErr error, job *ocrJob) {
+	defer close(job.done)
+	defer func() {
+		if r := recover(); r != nil {
+			recordCrash("ocrJob", r)
+			job.err = fmt.Errorf("OCR 内部错误：%v", r)
+		}
+	}()
+	if initErr != nil {
+		job.err = initErr
+		return
+	}
+	job.text, job.err = eng.Recognize(job.img)
 }

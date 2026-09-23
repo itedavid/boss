@@ -222,7 +222,9 @@ func startAuto() {
 	greetPoints := append([]Point(nil), cfg.ClickPoints...) // 组1：打招呼按钮
 	nextPoints := append([]Point(nil), cfg.ClickPoints2...) // 组2：下一页按钮
 
-	go autoLoop(nameRegion, onlineRegion, greetPoints, nextPoints, stop)
+	safeGo("autoLoop", func() {
+		autoLoop(nameRegion, onlineRegion, greetPoints, nextPoints, stop)
+	})
 }
 
 // stopAuto 停止自动打招呼。reason 会记进日志，方便看出是谁停的。

@@ -176,6 +176,8 @@ var (
 	procSetWindowPos              = modUser32.NewProc("SetWindowPos")
 	procGetAsyncKeyState          = modUser32.NewProc("GetAsyncKeyState")
 
+	procMessageBoxW = modUser32.NewProc("MessageBoxW")
+
 	procGetModuleHandleW = modKernel32.NewProc("GetModuleHandleW")
 
 	procGetStockObject     = modGdi32.NewProc("GetStockObject")
@@ -189,6 +191,22 @@ var (
 	procDeleteDC         = modGdi32.NewProc("DeleteDC")
 	procDeleteObject     = modGdi32.NewProc("DeleteObject")
 )
+
+// MessageBox 图标 / 按钮常量（只用到出错提示这一个）。
+const (
+	mbOK        = 0x00000000
+	mbIconError = 0x00000010 // MB_ICONERROR
+)
+
+// messageBox 弹一个系统消息框。用于崩溃提示：即使窗口已经没了也能弹出来。
+func messageBox(hwnd HWND, text, caption string, flags uint32) int {
+	r, _, _ := procMessageBoxW.Call(
+		uintptr(hwnd),
+		uintptr(unsafe.Pointer(utf16ptr(text))),
+		uintptr(unsafe.Pointer(utf16ptr(caption))),
+		uintptr(flags|mbOK))
+	return int(r)
+}
 
 // utf16ptr 生成 Windows API 所需的 UTF-16 字符串指针（支持中文）。
 func utf16ptr(s string) *uint16 {
