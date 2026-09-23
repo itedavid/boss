@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,6 +106,9 @@ var (
 )
 
 func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
+	// 窗口回调由 Windows 直接调用，一旦 panic 会穿过 C 边界直接杀进程。
+	// 这里兜住它：记录崩溃、吞掉 panic，程序继续跑。
+	defer guard("wndProc")
 	switch msg {
 	case WM_CREATE:
 		createControls(hwnd)
@@ -691,7 +695,14 @@ func runOCRRegion(kind int, region Rect) {
 	ocrBusy = true
 	setWindowText(statLabel(kind), utf16ptr(kindLabel(kind)+"：识别中…"))
 
-	go func() {
+	safeGo("runOCRRegion", func() {
+		// 万一这个 goroutine 崩了，也要把 ocrBusy 放开，否则「测试OCR」按钮会一直点不动。
+		defer func() {
+			if r := recover(); r != nil {
+				ocrBusy = false
+				recordCrash("runOCRRegion", r)
+			}
+		}()
 		st := ocrState{tested: true}
 		img, err := captureRect(region)
 		if err != nil {
@@ -711,7 +722,7 @@ func runOCRRegion(kind int, region Rect) {
 		ocrMu.Unlock()
 
 		postMessage(hwndMain, WM_APP_OCR, uintptr(kind), 0)
-	}()
+	})
 }
 
 // onOCRReady 在主线程把后台识别结果刷到界面上。
@@ -863,6 +874,23 @@ func describeRect(name string, r Rect) string {
 }
 
 func main() {
+
+	// 兜住主 goroutine 的 panic：崩溃时留下 crash.log 而不是无声消失。
+	defer guard("main")
+
+	// 把 main goroutine 钉死在当前 OS 线程上，整个进程期间不解锁。
+	//
+	// 这是 Win32 的硬性要求：窗口归属于「创建它的那条 OS 线程」，消息队列也是线程级的，
+	// 只有那条线程调 GetMessage 才能取到本窗口的消息。而 Go 的 goroutine 默认不绑定线程，
+	// 调度器会在阻塞点（channel 等待、系统调用、GC 等）把它挪到别的线程上继续跑。
+	//
+	// 一旦 main goroutine 在 createWindowEx 之后被挪走，后面的 getMessage 就跑在另一条
+	// 线程上、抽的是那条线程的空队列，真正的窗口队列再也没人取——界面就永久卡死：
+	// 鼠标移到窗口上转圈、点不动，窗口外一切正常，且不会自行恢复。
+	// 本程序在 WM_CREATE→startHotkey() 和「开始采集」→startCapture() 里都会 <-ready 阻塞，
+	// 正是最容易触发迁移的两个点，对应「刚打开」和「点采集按钮」时偶发的卡死。
+	runtime.LockOSThread()
+
 	setDPIAware()
 	cfg = loadConfig()
 	ensureConfigFile(cfg)

@@ -81,7 +81,7 @@ func startForceClick(group int) {
 		groupName(group), forceMinMs, forceMinMs+forceJitterMs, len(points))
 	requestDetectUI()
 
-	go forceLoop(points, stop)
+	safeGo("forceLoop", func() { forceLoop(points, stop) })
 }
 
 // stopForceClick 停止强制点击。group 传 0 表示停掉当前在跑的那一组（Esc / 退出用），
