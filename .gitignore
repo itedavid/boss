@@ -9,6 +9,9 @@ _*.log
 # 本机运行时配置（屏幕坐标等，每台机器不同，不入库）
 config.json
 
+# 崩溃黑匣子（运行时生成，不入库）
+crash.log
+
 # OS
 Thumbs.db
 .DS_Store

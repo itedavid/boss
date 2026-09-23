@@ -102,6 +102,9 @@ var (
 )
 
 func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
+	// 窗口回调由 Windows 直接调用，一旦 panic 会穿过 C 边界直接杀进程。
+	// 这里兜住它：记录崩溃、吞掉 panic，程序继续跑。
+	defer guard("wndProc")
 	switch msg {
 	case WM_CREATE:
 		createControls(hwnd)
@@ -665,7 +668,14 @@ func runOCRRegion(kind int, region Rect) {
 	ocrBusy = true
 	setWindowText(statLabel(kind), utf16ptr(kindLabel(kind)+"：识别中…"))
 
-	go func() {
+	safeGo("runOCRRegion", func() {
+		// 万一这个 goroutine 崩了，也要把 ocrBusy 放开，否则「测试OCR」按钮会一直点不动。
+		defer func() {
+			if r := recover(); r != nil {
+				ocrBusy = false
+				recordCrash("runOCRRegion", r)
+			}
+		}()
 		st := ocrState{tested: true}
 		img, err := captureRect(region)
 		if err != nil {
@@ -685,7 +695,7 @@ func runOCRRegion(kind int, region Rect) {
 		ocrMu.Unlock()
 
 		postMessage(hwndMain, WM_APP_OCR, uintptr(kind), 0)
-	}()
+	})
 }
 
 // onOCRReady 在主线程把后台识别结果刷到界面上。
@@ -837,6 +847,8 @@ func describeRect(name string, r Rect) string {
 }
 
 func main() {
+	// 兜住主 goroutine 的 panic：崩溃时留下 crash.log 而不是无声消失。
+	defer guard("main")
 	setDPIAware()
 	cfg = loadConfig()
 	ensureConfigFile(cfg)

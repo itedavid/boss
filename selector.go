@@ -114,6 +114,7 @@ func selectRegion(hideWindow HWND) (Rect, bool) {
 }
 
 func overlayWndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
+	defer guard("overlayWndProc")
 	switch msg {
 	case WM_CREATE:
 		createOverlayBitmap()

@@ -36,6 +36,7 @@ func startHotkey() bool {
 	}
 	ready := make(chan uint32, 1)
 	go func() {
+		defer guard("hotkeyThread")
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
@@ -81,6 +82,7 @@ func startCapture(group int) bool {
 
 	ready := make(chan uint32, 1)
 	go func() {
+		defer guard("captureThread")
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
@@ -141,6 +143,7 @@ func stopCapture() {
 
 // lowLevelMouseProc 运行在钩子线程上，必须尽快返回。
 func lowLevelMouseProc(nCode int32, wparam, lparam uintptr) uintptr {
+	defer guard("lowLevelMouseProc")
 	if nCode >= 0 && wparam == WM_LBUTTONDOWN {
 		ms := (*MSLLHOOKSTRUCT)(uintptrToPointer(lparam))
 		clickMu.Lock()
@@ -161,6 +164,7 @@ func lowLevelMouseProc(nCode int32, wparam, lparam uintptr) uintptr {
 //   - Esc   ：紧急停止——采集 + 自动打招呼 + 强制点击全停（WM_APP_STOPCAP）
 //   - Ctrl+C：只停自动化——自动打招呼 + 强制点击，不动采集（WM_APP_STOPAUTO）
 func lowLevelKeyboardProc(nCode int32, wparam, lparam uintptr) uintptr {
+	defer guard("lowLevelKeyboardProc")
 	if nCode >= 0 && (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN) {
 		kb := (*KBDLLHOOKSTRUCT)(uintptrToPointer(lparam))
 		if hwndMain != 0 {
