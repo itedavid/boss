@@ -172,7 +172,7 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		case idSign:
 			// 右下角署名彩蛋：在署名 "WSQ" 与 "i love you" 之间来回切换
 			if signLove {
-				setWindowText(hwndSign, utf16ptr("WSQ"))
+				setWindowText(hwndSign, utf16ptr("漫漫"))
 				signLove = false
 			} else {
 				setWindowText(hwndSign, utf16ptr("i love you"))
@@ -393,7 +393,7 @@ func createControls(hwnd HWND) {
 	// 右下角署名（开发者标记；稍大字号；点击在 "WSQ" 与 "i love you" 之间切换，纯彩蛋）
 	signFont := createFont(-19, "Microsoft YaHei") // 比默认 GUI 字体（约 11pt）大，约 14pt
 	hwndSign = createWindowEx(0,
-		utf16ptr("STATIC"), utf16ptr("WSQ"),
+		utf16ptr("STATIC"), utf16ptr("漫漫"),
 		WS_CHILD|WS_VISIBLE|SS_RIGHT|SS_NOTIFY,
 		int32(colX+wideW-140), int32(l.exitRow+2), 140, 24,
 		hwnd, idSign, hinst, 0)
