@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -837,6 +838,19 @@ func describeRect(name string, r Rect) string {
 }
 
 func main() {
+	// 把 main goroutine 钉死在当前 OS 线程上，整个进程期间不解锁。
+	//
+	// 这是 Win32 的硬性要求：窗口归属于「创建它的那条 OS 线程」，消息队列也是线程级的，
+	// 只有那条线程调 GetMessage 才能取到本窗口的消息。而 Go 的 goroutine 默认不绑定线程，
+	// 调度器会在阻塞点（channel 等待、系统调用、GC 等）把它挪到别的线程上继续跑。
+	//
+	// 一旦 main goroutine 在 createWindowEx 之后被挪走，后面的 getMessage 就跑在另一条
+	// 线程上、抽的是那条线程的空队列，真正的窗口队列再也没人取——界面就永久卡死：
+	// 鼠标移到窗口上转圈、点不动，窗口外一切正常，且不会自行恢复。
+	// 本程序在 WM_CREATE→startHotkey() 和「开始采集」→startCapture() 里都会 <-ready 阻塞，
+	// 正是最容易触发迁移的两个点，对应「刚打开」和「点采集按钮」时偶发的卡死。
+	runtime.LockOSThread()
+
 	setDPIAware()
 	cfg = loadConfig()
 	ensureConfigFile(cfg)
