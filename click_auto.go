@@ -50,6 +50,12 @@ const (
 	// 点完「下一页按钮」后的随机停留：0.8~1.5 秒，防止人机检测
 	nextPauseMin = 800 * time.Millisecond
 	nextPauseMax = 1500 * time.Millisecond
+
+	// 读到「姓名没变」时，先等这么久再重新识别一次，确认真的没翻过去才重翻。
+	//
+	// 为什么要等：网慢的时候页面还没渲染完，这一刻截到的其实还是上一个人的姓名，
+	// 直接翻页就会**连翻两页、漏掉一个人**。等一小会儿让页面渲染完再判断，能躲掉这种误判。
+	recheckDelay = 500 * time.Millisecond
 )
 
 // jitterPoint 在配置的点击点附近随机偏一点，避免每次都落在同一个像素上。
@@ -278,13 +284,19 @@ func sleepOrStop(stop <-chan struct{}, d time.Duration) bool {
 // 判定只看一件事：屏幕上是不是换人了。
 //
 //	读到与 current 不同的新名字 -> 新人：查在线 -> 在线就打招呼
-//	读到同名 / 读不出字         -> 上一次翻页没生效，这一轮不打招呼
+//	读到同名 / 读不出字         -> 先等 recheckDelay 再确认一次，见下
 //
-// 关键是这两种情况最后**都要翻页**，循环里没有任何「什么都不做」的分支，
-// 所以结构上不可能卡住：
-//   - 页面没变   -> 读到同名 -> 重翻一次
+// 「同名/读不出字」这条分支不是立刻翻页，而是**先缓一下重识别一次**：
+//
+//	网慢时页面还没渲染完，这一刻截到的其实还是上一个人的名字，
+//	若直接翻页就会连翻两页、漏掉一个人。等 500ms 重识别后：
+//	  - 确实换人了 -> 说明上次翻页生效了，按新人正常处理（不再翻，否则多翻一页）；
+//	  - 还是没变   -> 上次翻页确实没生效，重翻一次。
+//
+// 循环里没有任何「什么都不做」的长期分支，所以结构上不会卡住：
+//   - 页面没变   -> 重识别确认后重翻一次
 //   - OCR 抖动   -> 每轮读出的都不一样 -> 当成新人正常处理
-//   - 读不出字   -> 重翻一次
+//   - 读不出字   -> 重识别确认后重翻一次
 //
 // 翻页本身带 0.8~1.5 秒停留（见 clickNextPage），页面有足够时间渲染完，
 // 不会连着读到「加载中」的旧页面。
@@ -331,14 +343,60 @@ func autoLoop(nameRegion, onlineRegion Rect, greetPoints, nextPoints []Point, st
 				return // 期间被停止
 			}
 		} else {
-			// 同名或读不出字：说明上一次翻页没生效（或者已经到底了），再翻一次。
+			// 同名或读不出字：先别急着翻，缓一下再确认一次（见 recheckDelay 的说明）。
+			//
+			// 网慢时这一刻可能只是页面还没渲染完，直接翻会连翻两页漏人；
+			// 等 500ms 重新识别后：
+			//   - 还是没变 -> 确实没翻过去，重翻一次；
+			//   - 已经换人 -> 刚才那次翻页是成功的，按新人正常走（别再翻，否则多翻一页）。
 			if name == "" {
-				appendLog("没识别到姓名，重翻一次")
+				appendLog("没识别到姓名，%v 后重识别确认", recheckDelay)
 			} else {
-				appendLog("姓名未变化（%s），重翻一次", name)
+				appendLog("姓名未变化（%s），%v 后重识别确认", name, recheckDelay)
 			}
-			if clickNextPage(nextPoints, current, stop) {
-				return // 期间被停止
+			if sleepOrStop(stop, recheckDelay) {
+				return
+			}
+
+			// 重新截一次、识别一次
+			img2, err := autoCapture(nameRegion)
+			if err != nil {
+				noteAutoError("重识别截图失败", err)
+				sleepOrStop(stop, autoInterval)
+				continue
+			}
+			text2, err := autoRecognize(img2)
+			if err != nil {
+				noteAutoError("重识别失败", err)
+				sleepOrStop(stop, autoInterval)
+				continue
+			}
+			noteAutoOK()
+			name2 := normalizeName(text2)
+
+			switch {
+			case name2 != "" && name2 != current:
+				// 确认换人了：上一次翻页其实生效了，按新人处理。
+				//
+				// 注意：这里**不要**再自己调 clickNextPage —— greetPerson 的契约就是
+				// 「处理完一位人员后一定翻页」（在线打招呼后翻、不在线直接翻，
+				// 两条路径都汇到它内部的 clickNextPage）。所以打招呼 + 翻页
+				// 都已经包含在这次调用里了；在外层再翻一次反而会多翻一页。
+				current = name2
+				setAutoPerson(name2)
+				setAutoState(stChanged)
+				appendLog("重识别发现已换人：%s", name2)
+				requestDetectUI()
+				if greetPerson(name2, onlineRegion, greetPoints, nextPoints, stop) == greetHalt {
+					return
+				}
+
+			default:
+				// 确认还是没变（同名 / 仍然读不出）：重翻一次。
+				appendLog("重识别确认未变化，重翻一次")
+				if clickNextPage(nextPoints, current, stop) {
+					return // 期间被停止
+				}
 			}
 		}
 
