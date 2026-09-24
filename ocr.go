@@ -30,12 +30,9 @@ type OCR interface {
 // looksOnline 判断 OCR 出来的在线状态文本是不是「在线」。
 //
 // OCR 有时会在字与字之间插空格（例如「在 线」），所以先把空白都去掉再比。
-// 另外「不在线」里面也包含「在线」，必须单独排除掉，不然会误判。
+// 只要文本里出现「在线」两字就算在线。
 func looksOnline(text string) bool {
 	flat := strings.Join(strings.Fields(text), "")
-	if strings.Contains(flat, "不在线") {
-		return false
-	}
 	return strings.Contains(flat, "在线")
 }
 
