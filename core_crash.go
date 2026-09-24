@@ -1,6 +1,6 @@
 //go:build windows
 
-// crash.go 是「崩溃黑匣子」：把原本会让程序无声闪退的 panic 兜住，
+// core_crash.go 是「崩溃黑匣子」：把原本会让程序无声闪退的 panic 兜住，
 // 记成一份带完整堆栈的 crash.log（放在 exe 同目录），并弹窗提示。
 //
 // 为什么需要它：本程序用 -H=windowsgui 打包，没有控制台，

@@ -1,6 +1,6 @@
 //go:build windows
 
-// detect.go 是「日志缓冲 + 界面刷新合并 + 姓名整理」三件事：
+// core_detect.go 是「日志缓冲 + 界面刷新合并 + 姓名整理」三件事：
 //
 //	appendLog / logText / clearLog  —— 内存日志（最多 logMaxLines 行，只在界面日志框里显示，不落盘）
 //	requestDetectUI / takeDetectUI  —— 后台 goroutine 请求主线程刷界面，合并成队列里最多一条

@@ -1,6 +1,6 @@
 //go:build windows
 
-// winrt_ocr.go 用 Go 标准库 syscall 调用 Windows 自带的 OCR（WinRT API）：
+// ocr_engine.go 用 Go 标准库 syscall 调用 Windows 自带的 OCR（WinRT API）：
 //
 //	Windows.Media.Ocr.OcrEngine
 //

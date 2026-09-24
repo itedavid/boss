@@ -1,6 +1,6 @@
 //go:build windows
 
-// ocr.go 定义 OCR 的通用接口。以后要换引擎（例如 ONNX），
+// ocr_run.go 定义 OCR 的通用接口。以后要换引擎（例如 ONNX），
 // 只要再写一个实现了这个接口的类型即可，其它代码不用动。
 package main
 

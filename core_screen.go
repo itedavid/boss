@@ -1,6 +1,6 @@
 //go:build windows
 
-// screen.go 负责屏幕截图：把屏幕上一块矩形取成 32 位 BGRA 位图交给 OCR。
+// core_screen.go 负责屏幕截图：把屏幕上一块矩形取成 32 位 BGRA 位图交给 OCR。
 package main
 
 import (

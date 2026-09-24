@@ -1,6 +1,6 @@
 //go:build windows
 
-// winapi.go 用 Go 标准库 syscall 直接调用 Win32 API，避免任何第三方依赖。
+// core_winapi.go 用 Go 标准库 syscall 直接调用 Win32 API，避免任何第三方依赖。
 package main
 
 import (

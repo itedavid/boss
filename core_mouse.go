@@ -1,6 +1,6 @@
 //go:build windows
 
-// mouse.go 负责「移动鼠标 + 点击」。用 SendInput，不依赖任何第三方库。
+// core_mouse.go 负责「移动鼠标 + 点击」。用 SendInput，不依赖任何第三方库。
 package main
 
 import (

@@ -2,7 +2,7 @@
 
 // ocr_ui.go 是 OCR 的界面侧：区域框选与保存、发起识别、把识别结果刷到状态标签和结果框。
 //
-// 识别本身在 ocr.go / winrt_ocr.go 里；这里只管「界面上的这块区域」这一层：
+// 识别本身在 ocr_run.go / ocr_engine.go 里；这里只管「界面上的这块区域」这一层：
 // 哪个 kind 对应哪个区域、哪两个控件，以及识别是走后台 goroutine + PostMessage 回主线程。
 package main
 

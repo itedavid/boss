@@ -8,9 +8,11 @@ Boss Helper —— 一个纯 Go 写的 Windows 桌面小工具，零第三方依
 - **本地 OCR**：直接调用 Windows 内置 WinRT OCR，识别中文姓名 / 在线状态，无需 Python / Node / 外部引擎
 - **自动打招呼**：后台 goroutine 驱动，每轮「打招呼 → 翻页」，靠姓名变化判断是否翻页成功；可设次数上限，打满自动收工
 - **强制点击**：定时循环点击采集好的坐标点
+- **快捷回复页**：独立第二页，6 组点击点各自采集，每组可设「点到下一点等多久」（毫秒）
+- **轮流点击**：每轮按组序 1→6，每组随机挑 1 个点点击一次，没采点的组跳过，跑完一轮回到第 1 组无限循环
 - **次数上限**：界面上直接填，运行中改也立刻生效（原子读，跨线程安全）
 - **窗口置顶**：右上角一键切换，状态存 `config.json`（默认开启）
-- **全局热键**：`Esc` = 全部停止（采集 + 自动打招呼 + 强制点击）；`Ctrl+C` = 只停自动化（自动打招呼 + 强制点击，不碰采集）
+- **全局热键**：`Esc` = 全部停止（采集 + 自动打招呼 + 强制点击 + 轮流点击）；`Ctrl+C` = 只停自动化（自动打招呼 + 强制点击 + 轮流点击，不碰采集）
 
 ## 构建
 需要 Go 1.21+，仅支持 Windows（用了 Win32 API）。
@@ -27,3 +29,21 @@ go build -o BossHelper.exe -ldflags "-H windowsgui -s -w" .
 ## 说明
 - 模块：`bosshelper`，`go.mod` 无任何 `require`
 - 窗口 / 消息循环 / GDI / 钩子 / COM 全部用标准库 `syscall` + `unsafe` 直连 Win32
+
+## 文件结构
+
+单包（`package main`）按**功能域加前缀**分文件，`ls` 即可按组看：
+
+| 前缀 | 功能域 | 文件 |
+|---|---|---|
+| `core_` | 基础层：Win32 声明、鼠标、截图、位图、配置、崩溃、日志 | `core_winapi` / `core_winapi_hook` / `core_mouse` / `core_screen` / `core_image` / `core_config` / `core_crash` / `core_detect` |
+| `ocr_` | OCR：引擎、区域框选、识别流程、识别界面 | `ocr_engine` / `ocr_region` / `ocr_run` / `ocr_ui` |
+| `cap_` | 点击点采集：全局钩子、采集流程 | `cap_hook` / `cap_flow` |
+| `click_` | 点击执行：自动打招呼 / 强制点击 / 轮流点击 | `click_auto` / `click_force` / `click_quick` |
+| `quick_` | 快捷回复页业务逻辑（全局组号约定、6 组存取） | `quick_reply` |
+| `ui_` | 界面：入口、布局、建控件、刷新、置顶、次数上限 | `main` / `ui_layout` / `ui_pages` / `ui_refresh` / `ui_topmost` / `ui_autogreet` |
+
+> 注：Go 要求同一包的文件必须放在**同一目录**，所以这里不做子目录划分，靠文件名前缀分组。
+> 拆成多包（`ui` / `click` 等）会立刻形成循环依赖——全局配置 `cfg`、控件句柄、ID 常量被几乎每个文件引用，
+> 拆包就得整体改成依赖注入，对一个零依赖的单 exe 工具得不偿失。
+

@@ -34,7 +34,7 @@ const (
 )
 
 // 「快捷回复」页 6 组控件的按钮 ID。
-// 每组三个按钮各占连续的 quickGroupCount 个号（quickGroupCount 见 config.go）。
+// 每组三个按钮各占连续的 quickGroupCount 个号（quickGroupCount 见 core_config.go）。
 // 派发时用区间判断是哪一类、减基数得到组号。
 const (
 	qkBtnStartBase = 3000
@@ -144,7 +144,7 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		// SetWindowText 写进去的文本会在创建流程收尾时被系统重置掉，输入框最终仍是空的。
 		// 所以只投一条消息给自己，等 WM_CREATE 返回、窗口真正就绪后再回填（见 WM_APP_LOADCFG）。
 		postMessage(hwnd, WM_APP_LOADCFG, 0, 0)
-		// 置顶：按配置初始化（默认开启，见 config.go loadConfig）
+		// 置顶：按配置初始化（默认开启，见 core_config.go loadConfig）
 		topMostOn = cfg.TopMost
 		applyTopMost()
 		updateDisplay()

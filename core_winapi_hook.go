@@ -1,6 +1,6 @@
 //go:build windows
 
-// winapi_hook.go 补充 V0.2 用到的 Win32 声明：
+// core_winapi_hook.go 补充 V0.2 用到的 Win32 声明：
 // 全局低级钩子、窗口矩形、线程消息投递。仍然只用 Go 标准库 syscall，无第三方依赖。
 
 package main
