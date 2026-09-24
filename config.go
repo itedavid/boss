@@ -31,7 +31,26 @@ type Config struct {
 	ClickPoints2 []Point `json:"click_points2"` // 组2：下一页按钮的点击点
 	MaxGreets    int     `json:"max_greets"`    // 本轮最多打多少次招呼，0 = 不限
 	TopMost      bool    `json:"topmost"`       // 主窗口是否置顶，默认开启
+
+	// QuickGroups 是「快捷回复」页面的点击点，固定 6 组，与上面的打招呼点击点完全独立。
+	// 它是纯坐标：不做任何识别与判断，只按采集的点依次/组合点击（自动化后续实现）。
+	QuickGroups [quickGroupCount][]Point `json:"quick_groups"`
+
+	// QuickIntervals 是「快捷回复」页 6 组各自的点击间隔（毫秒）：点到下一个点之间等多久。
+	// 与 QuickGroups 一一对应（下标 0 起）。0 表示用默认值 quickIntervalDefaultMs。
+	QuickIntervals [quickGroupCount]int `json:"quick_intervals"`
 }
+
+// quickGroupCount 是「快捷回复」页固定提供的组数。
+const quickGroupCount = 6
+
+// 快捷回复页每组的点击间隔（毫秒）：
+// quickIntervalDefaultMs 是输入框留空 / 填 0 / 配置缺失时的兜底值；
+// quickIntervalMaxMs 是上限，防止手滑输个天文数字导致点了之后要等半分钟。
+const (
+	quickIntervalDefaultMs = 500
+	quickIntervalMaxMs     = 60000
+)
 
 const configFileName = "config.json"
 
@@ -69,6 +88,12 @@ func loadConfig() Config {
 	}
 	if cfg.ClickPoints2 == nil {
 		cfg.ClickPoints2 = []Point{}
+	}
+	// 快捷回复的 6 组：保证每格都是非 nil 切片（JSON 里始终是 []，不是 null）
+	for i := range cfg.QuickGroups {
+		if cfg.QuickGroups[i] == nil {
+			cfg.QuickGroups[i] = []Point{}
+		}
 	}
 	return cfg
 }

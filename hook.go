@@ -23,8 +23,11 @@ var (
 	hotkeyThreadID uint32
 	hotkeyRunning  bool
 
-	clickMu     sync.Mutex
-	clickQueues [2][]Point // 两组点击点队列，下标 0=打招呼按钮，1=下一页按钮
+	clickMu sync.Mutex
+	// clickQueues 是各采集组待入队的点击点，下标 = 组号 - 1。
+	// 前两组是打招呼页的「打招呼按钮 / 下一页按钮」；再往后是快捷回复页的 6 组。
+	// 组号 g 与 quickGroupCount 的关系：1、2 是打招呼页，3..2+quickGroupCount 是快捷回复页第 1..N 组。
+	clickQueues [2 + quickGroupCount][]Point
 )
 
 // startHotkey 永久安装全局键盘钩子，提供两个热键：
@@ -146,12 +149,12 @@ func lowLevelMouseProc(nCode int32, wparam, lparam uintptr) uintptr {
 	defer guard("lowLevelMouseProc")
 	if nCode >= 0 && wparam == WM_LBUTTONDOWN {
 		ms := (*MSLLHOOKSTRUCT)(uintptrToPointer(lparam))
-		clickMu.Lock()
-		g := captureGroup
-		if g >= 1 && g <= 2 {
-			clickQueues[g-1] = append(clickQueues[g-1], Point{X: int(ms.Pt.X), Y: int(ms.Pt.Y)})
-		}
-		clickMu.Unlock()
+	clickMu.Lock()
+	g := captureGroup
+	if g >= 1 && g <= len(clickQueues) {
+		clickQueues[g-1] = append(clickQueues[g-1], Point{X: int(ms.Pt.X), Y: int(ms.Pt.Y)})
+	}
+	clickMu.Unlock()
 		if hwndMain != 0 {
 			// wparam 带上当前组号，主线程据此把点并入对应组
 			postMessage(hwndMain, WM_APP_CLICK, uintptr(g), 0)
@@ -184,9 +187,9 @@ func lowLevelKeyboardProc(nCode int32, wparam, lparam uintptr) uintptr {
 }
 
 // drainClicks 在主线程把某一组的队列点击点并入配置，然后刷新界面并落盘。
-// group 为 1 或 2。
+// group 为 1/2（打招呼页两组）或 3..2+quickGroupCount（快捷回复页 6 组）。
 func drainClicks(group int) {
-	if group < 1 || group > 2 {
+	if group < 1 || group > len(clickQueues) {
 		return
 	}
 	clickMu.Lock()
@@ -197,19 +200,22 @@ func drainClicks(group int) {
 	if len(pending) == 0 {
 		return
 	}
+	kept := make([]Point, 0, len(pending))
 	for _, p := range pending {
 		// 点在我们自己窗口上的（例如 [停止采集...] 按钮）不算点击点
 		if pointInMainWindow(p) {
 			continue
 		}
-		if group == 1 {
-			cfg.ClickPoints = append(cfg.ClickPoints, p)
-		} else {
-			cfg.ClickPoints2 = append(cfg.ClickPoints2, p)
-		}
+		kept = append(kept, p)
+		appendClickPoint(group, p)
 	}
 	updateDisplay()
 	_ = saveConfig(cfg)
+	// 日志放到最后：updateDisplay 里会把日志框刷成当前内容，先写会被这次刷新带出来。
+	if n := len(kept); n > 0 {
+		appendLog("%s 已记录 %d 个点击点", groupName(group), n)
+		requestDetectUI()
+	}
 }
 
 // pointInMainWindow 判断某个屏幕坐标是否落在主窗口上。

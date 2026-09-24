@@ -72,6 +72,10 @@ func startForceClick(group int) {
 	if autoBusy {
 		stopAuto("开始强制点击")
 	}
+	// 快捷回复页的轮流点击同样抢鼠标，也要停掉
+	if qkRunningNow() {
+		stopQuickClick("开始强制点击")
+	}
 	if capturing {
 		stopCaptureFlow(0)
 		appendLog("强制点击%s 期间已停止采集，避免把自动点击记成采集点", groupName(group))

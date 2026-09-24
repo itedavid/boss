@@ -3,13 +3,8 @@
 package main
 
 import (
-	"fmt"
 	"runtime"
-	"strconv"
-	"strings"
-	"sync"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
@@ -34,7 +29,24 @@ const (
 	idBtnForce3     = 1027 // 采集区「强制点击下一页」：对第2组点击点做强制点击（toggle 开关）
 	idEditMaxGreet  = 1028 // 「打招呼次数上限」输入框
 	idBtnTop        = 1029 // 窗口置顶切换按钮（右上角）
+	idBtnPage       = 1030 // 页面切换按钮（打招呼页 ↔ 快捷回复页）
+	idBtnQkRun      = 1031 // 「开始点击 / 停止点击」：轮流点击 B 页 6 组已采集的坐标点
 )
+
+// 「快捷回复」页 6 组控件的按钮 ID。
+// 每组三个按钮各占连续的 quickGroupCount 个号（quickGroupCount 见 config.go）。
+// 派发时用区间判断是哪一类、减基数得到组号。
+const (
+	qkBtnStartBase = 3000
+	qkBtnStopBase  = qkBtnStartBase + quickGroupCount
+	qkBtnClearBase = qkBtnStopBase + quickGroupCount
+	qkBtnRangeEnd  = qkBtnClearBase + quickGroupCount
+)
+
+// 「快捷回复」页 6 组「点击间隔」输入框的 ID。
+// 每组的输入框只占 1 个号，所以起点要在上面那三段按钮号之后再留一段安全距离，
+// 免得以后给按钮加段时撞号。改动即时生效（EN_CHANGE，见 wndProc）。
+const qkEditGapBase = 4000
 
 // 界面尺寸（像素）
 const (
@@ -54,6 +66,11 @@ const (
 	ocrColW   = (wideW - colGap) / 2    // 单列宽，约 187
 	ocrLeftX  = colX                    // 左列 x（在线状态）
 	ocrRightX = colX + ocrColW + colGap // 右列 x（求职者姓名）
+
+	// 快捷回复页：每行 qkCols 组，每组一块（标签 + 列表 + 按钮行）
+	qkCols  = 2                    // 每行排几组
+	qkColW  = (wideW - colGap) / 2 // 单组宽，与 OCR 单列同宽
+	qkListH = 72                   // 点列表高度（比采集区的矮些，好放下 3 行）
 )
 
 // OCR 任务类型
@@ -84,22 +101,26 @@ var (
 	hwndForceBtn2 HWND
 	hwndTopBtn    HWND // 右上角「窗口置顶」切换按钮
 	topMostOn     bool // 当前是否置顶（界面与窗口状态同步）
-)
 
-// ocrState 是一次识别的结果。
-type ocrState struct {
-	text    string
-	elapsed time.Duration
-	err     error
-	tested  bool
-}
+	hwndPageBtn HWND // 「打招呼 / 快捷回复」页面切换按钮
 
-// OCR 结果从后台 goroutine 交回主线程。
-var (
-	ocrMu     sync.Mutex
-	ocrName   ocrState
-	ocrOnline ocrState
-	ocrBusy   bool
+	// 快捷回复页（B 页）的控件：每组一套，下标 0..quickGroupCount-1。
+	hwndQkStat  [quickGroupCount]HWND // 该组状态标签
+	hwndQkList  [quickGroupCount]HWND // 该组点列表
+	hwndQkStart [quickGroupCount]HWND // 开始采集
+	hwndQkStop  [quickGroupCount]HWND // 停止采集
+	hwndQkClear [quickGroupCount]HWND // 清空
+	hwndQkGap   [quickGroupCount]HWND // 点击间隔输入框（毫秒）
+
+	hwndQkRunBtn  HWND // B 页「开始点击 / 停止点击」（公共区，不属于某一组）
+	hwndQkRunStat HWND // B 页轮流点击的状态说明行
+
+	// A 页（打招呼页）的控件集合，切页时整批显隐用。
+	pageACtrls []HWND
+	// B 页（快捷回复页）的控件集合。
+	pageBCtrls []HWND
+	// 当前页：false=打招呼页，true=快捷回复页。
+	quickPage bool
 )
 
 func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
@@ -108,6 +129,10 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 	defer guard("wndProc")
 	switch msg {
 	case WM_CREATE:
+		// 注意：createWindowEx 是在 WM_CREATE 处理完之后才返回并赋值给 hwndMain 的，
+		// 所以此刻包级的 hwndMain 还是 0——必须用回调参数 hwnd（这才是真窗口句柄）。
+		// 之前「启动回填不生效」就是因为往 0 投消息，postMessage 直接失败。
+		hwndMain = hwnd
 		createControls(hwnd)
 		appendLog("程序启动，配置：%s", configPath())
 		if !startHotkey() {
@@ -115,7 +140,10 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		} else {
 			appendLog("全局热键：Esc=全部停止，Ctrl+C=只停自动化")
 		}
-		loadMaxGreetsToUI()
+		// 配置回填不能在 WM_CREATE 里直接做：此时窗口还没创建完，
+		// SetWindowText 写进去的文本会在创建流程收尾时被系统重置掉，输入框最终仍是空的。
+		// 所以只投一条消息给自己，等 WM_CREATE 返回、窗口真正就绪后再回填（见 WM_APP_LOADCFG）。
+		postMessage(hwnd, WM_APP_LOADCFG, 0, 0)
 		// 置顶：按配置初始化（默认开启，见 config.go loadConfig）
 		topMostOn = cfg.TopMost
 		applyTopMost()
@@ -170,6 +198,14 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 			destroyWindow(hwnd)
 		case idBtnTop:
 			toggleTopMost()
+		case idBtnPage:
+			togglePage()
+		case idBtnQkRun:
+			toggleQuickClick()
+		default:
+			// 快捷回复页 6 组的 开始/停止/清空：ID 按「类型 + 组号」连续排（见 qkBtnStartBase）
+			// 以及 6 个「点击间隔」输入框（见 qkEditGapBase）。
+			dispatchQuickControl(int(uint16(wparam)), uint16(wparam>>16))
 		}
 		return 0
 
@@ -182,16 +218,25 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		return 0
 
 	case WM_APP_STOPCAP:
-		// Esc 是紧急停止：采集、自动打招呼、强制点击全停掉（采集停当前激活组）
+		// Esc 是紧急停止：采集、自动打招呼、强制点击、轮流点击全停掉（采集停当前激活组）
 		stopCaptureFlow(0)
 		stopAuto("按了 Esc")
 		stopForceClick(0, "按了 Esc")
+		stopQuickClick("按了 Esc")
 		return 0
 
 	case WM_APP_STOPAUTO:
-		// Ctrl+C：只打断自动化——自动打招呼 + 强制点击（强制翻页），不碰采集
+		// Ctrl+C：只打断自动化——自动打招呼 + 强制点击 + 轮流点击，不碰采集
 		stopAuto("按了 Ctrl+C")
 		stopForceClick(0, "按了 Ctrl+C")
+		stopQuickClick("按了 Ctrl+C")
+		return 0
+
+	// 窗口创建完成后，把配置里的值回填到各个输入框。
+	// 必须是「创建完之后」：WM_CREATE 期间 SetWindowText 的文本会被系统重置。
+	case WM_APP_LOADCFG:
+		loadMaxGreetsToUI()
+		loadQuickIntervalsToUI()
 		return 0
 
 	// OCR 后台 goroutine 发来的通知（wparam = 任务类型）
@@ -215,636 +260,11 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		stopCapture()
 		stopAuto("")
 		stopForceClick(0, "")
+		stopQuickClick("")
 		postQuitMessage(0)
 		return 0
 	}
 	return defWindowProc(hwnd, msg, wparam, lparam)
-}
-
-// layout 记录各控件自上而下的 y 坐标。控件按顺序排，保证互不重叠。
-type layout struct {
-	capTop, capBoxRow                                 int
-	capBtnStart, capBtnStop, capBtnClear, capBtnForce int
-	capBottom                                         int
-
-	// 两个 OCR 区域并排：左=在线状态，右=求职者姓名（两列共用同一套 y）
-	ocrTop, ocrBoxRow                  int
-	ocrBtnSel, ocrBtnTest, ocrBtnClear int
-	ocrStatRow, ocrBottom              int
-
-	btnLog, logRow       int
-	btnAuto, lblAutoProg int
-	lblAuto, exitRow     int
-	topBtnRow            int // 顶部「窗口置顶」按钮所在行
-}
-
-func controlY() layout {
-	var l layout
-	y := topY
-	// 顶部「窗口置顶」按钮独占一行（靠右），其余控件在其下方
-	l.topBtnRow = y
-	y += btnH + 4
-	// 采集区：打招呼按钮 / 下一页按钮 两列并排
-	l.capTop = y
-	y += lblH + 4
-	l.capBoxRow = y
-	y += listH + 4
-	l.capBtnStart = y
-	y += btnH + 4
-	l.capBtnStop = y
-	y += btnH + 4
-	l.capBtnClear = y
-	y += btnH + 4
-	l.capBtnForce = y
-	y += btnH + 4
-	l.capBottom = y
-
-	// 两个 OCR 区域并排（左右两列共用同一套 y）
-	l.ocrTop = y
-	y += lblH + 4
-	l.ocrBoxRow = y
-	y += rltH + 4
-	l.ocrBtnSel = y
-	y += btnH + 4
-	l.ocrBtnTest = y
-	y += btnH + 4
-	l.ocrBtnClear = y
-	y += btnH + 4
-	l.ocrStatRow = y
-	y += lblH + 12
-	l.ocrBottom = y
-
-	l.btnLog = y
-	y += btnH + 6
-	l.logRow = y
-	y += logH + 12
-
-	// 「次数上限」输入框和「开始打招呼」「停止」共用这一行（控件见 createControls）
-	l.btnAuto = y
-	y += btnH + 2
-	// 进度单独占一行（本次已打 / 本次剩余），比塞在状态标签里更好认
-	l.lblAutoProg = y
-	y += lblH + 2
-	l.lblAuto = y
-	y += lblH + 10
-
-	l.exitRow = y
-	return l
-}
-
-// clientSize 算出刚好放得下所有控件的客户区大小。
-func clientSize() (int, int) {
-	return colX + wideW + colX, controlY().exitRow + btnH + topY
-}
-
-func createControls(hwnd HWND) {
-	hinst := getModuleHandle()
-	font := getStockObject(DEFAULT_GUI_FONT)
-
-	mkButton := func(text string, id int, x, y, w, h int) HWND {
-		return createWindowEx(0,
-			utf16ptr("BUTTON"), utf16ptr(text),
-			WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
-			int32(x), int32(y), int32(w), int32(h),
-			hwnd, HMENU(id), hinst, 0)
-	}
-	mkLabel := func(text string, x, y, w, h int) HWND {
-		return createWindowEx(0,
-			utf16ptr("STATIC"), utf16ptr(text),
-			WS_CHILD|WS_VISIBLE|SS_LEFT,
-			int32(x), int32(y), int32(w), int32(h),
-			hwnd, 0, hinst, 0)
-	}
-	mkReadOnly := func(x, y, w, h int) HWND {
-		return createWindowEx(WS_EX_CLIENTEDGE,
-			utf16ptr("EDIT"), utf16ptr(""),
-			WS_CHILD|WS_VISIBLE|WS_VSCROLL|ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL,
-			int32(x), int32(y), int32(w), int32(h),
-			hwnd, 0, hinst, 0)
-	}
-	// 单行数字输入框：只收数字、靠右显示
-	mkNumEdit := func(x, y, w, h int) HWND {
-		return createWindowEx(WS_EX_CLIENTEDGE,
-			utf16ptr("EDIT"), utf16ptr(""),
-			WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL|ES_RIGHT|ES_NUMBER,
-			int32(x), int32(y), int32(w), int32(h),
-			hwnd, HMENU(idEditMaxGreet), hinst, 0)
-	}
-
-	l := controlY()
-	all := []HWND{}
-
-	// 采集区两列：左=打招呼按钮，右=下一页按钮
-	hwndCapStat1 = mkLabel("未采集", ocrLeftX, l.capTop, ocrColW, lblH)
-	hwndCapList1 = mkReadOnly(ocrLeftX, l.capBoxRow, ocrColW, listH)
-	btnStart := mkButton("开始采集打招呼按钮", idBtnStart, ocrLeftX, l.capBtnStart, ocrColW, btnH)
-	btnStop := mkButton("停止采集打招呼按钮", idBtnStop, ocrLeftX, l.capBtnStop, ocrColW, btnH)
-	btnClear := mkButton("清空打招呼按钮", idBtnClearClks, ocrLeftX, l.capBtnClear, ocrColW, btnH)
-	hwndForceBtn1 = mkButton("强制点击打招呼", idBtnForce2, ocrLeftX, l.capBtnForce, ocrColW, btnH)
-
-	hwndCapStat2 = mkLabel("未采集", ocrRightX, l.capTop, ocrColW, lblH)
-	hwndCapList2 = mkReadOnly(ocrRightX, l.capBoxRow, ocrColW, listH)
-	btnStart2 := mkButton("开始采集下一页按钮", idBtnStart2, ocrRightX, l.capBtnStart, ocrColW, btnH)
-	btnStop2 := mkButton("停止采集下一页按钮", idBtnStop2, ocrRightX, l.capBtnStop, ocrColW, btnH)
-	btnClear2 := mkButton("清空下一页按钮", idBtnClearClks2, ocrRightX, l.capBtnClear, ocrColW, btnH)
-	hwndForceBtn2 = mkButton("强制点击下一页", idBtnForce3, ocrRightX, l.capBtnForce, ocrColW, btnH)
-
-	// 左列：在线状态
-	hwndOnlRgn = mkLabel("在线状态：未设置", ocrLeftX, l.ocrTop, ocrColW, lblH)
-	hwndOnlText = mkReadOnly(ocrLeftX, l.ocrBoxRow, ocrColW, rltH)
-	btnSelOnl := mkButton("选择在线状态", idBtnSelOnline, ocrLeftX, l.ocrBtnSel, ocrColW, btnH)
-	btnTestOnl := mkButton("测试OCR", idBtnTestOnline, ocrLeftX, l.ocrBtnTest, ocrColW, btnH)
-	btnClrOnl := mkButton("清空", idBtnClearOnl, ocrLeftX, l.ocrBtnClear, ocrColW, btnH)
-	hwndOnlStat = mkLabel("在线状态：未测试", ocrLeftX, l.ocrStatRow, ocrColW, lblH)
-
-	// 右列：求职者姓名
-	hwndNameRgn = mkLabel("求职者姓名：未设置", ocrRightX, l.ocrTop, ocrColW, lblH)
-	hwndOcrText = mkReadOnly(ocrRightX, l.ocrBoxRow, ocrColW, rltH)
-	btnSelName := mkButton("选择求职者姓名", idBtnSelName, ocrRightX, l.ocrBtnSel, ocrColW, btnH)
-	btnTestName := mkButton("测试OCR", idBtnTestName, ocrRightX, l.ocrBtnTest, ocrColW, btnH)
-	btnClrName := mkButton("清空", idBtnClearName, ocrRightX, l.ocrBtnClear, ocrColW, btnH)
-	hwndOcrStat = mkLabel("求职者姓名：未测试", ocrRightX, l.ocrStatRow, ocrColW, lblH)
-
-	btnClearLog := mkButton("清空日志", idBtnClearLog, colX, l.btnLog, btnW, btnH)
-	hwndLog = mkReadOnly(colX, l.logRow, wideW, logH)
-
-	// 打招呼次数上限：和「开始打招呼」同一行，放在按钮左边
-	lblMaxTitle := mkLabel("次数上限", colX, l.btnAuto+5, 60, lblH)
-	hwndMaxGreet = mkNumEdit(colX+64, l.btnAuto+3, 46, editH)
-	sendMessage(hwndMaxGreet, EM_SETLIMITTEXT, 6, 0)
-	lblMaxHint := mkLabel("0=不限", colX+312, l.btnAuto+5, wideW-312, lblH)
-
-	btnAuto := mkButton("开始打招呼", idBtnAuto, colX+116, l.btnAuto, btnWRgn, btnH)
-	btnAutoStop := mkButton("停止", idBtnAutoStop, colX+116+btnWRgn+6, l.btnAuto, btnW, btnH)
-	hwndAutoProg = mkLabel("本次已打 0　本次剩余 不限", colX, l.lblAutoProg, wideW, lblH)
-	hwndAutoStat = mkLabel("打招呼：未开始", colX, l.lblAuto, wideW, lblH)
-
-	btnExit := mkButton("退出", idBtnExit, colX, l.exitRow, btnW, btnH)
-
-	// 顶部右上角「窗口置顶」切换按钮（标题在「置顶」↔「已置顶·点此取消」间切换）
-	btnTop := mkButton("置顶", idBtnTop, colX+wideW-140, l.topBtnRow, 140, btnH)
-
-	all = append(all, btnStart, btnStop, btnClear, hwndForceBtn1,
-		btnTop,
-		btnStart2, btnStop2, btnClear2, hwndForceBtn2,
-		btnSelName, btnTestName, btnClrName, btnSelOnl, btnTestOnl, btnClrOnl,
-		btnClearLog, btnAuto, btnAutoStop,
-		btnExit,
-		hwndCapStat1, hwndCapList1, hwndCapStat2, hwndCapList2,
-		hwndNameRgn, hwndOcrStat, hwndOcrText,
-		hwndOnlRgn, hwndOnlStat, hwndOnlText,
-		hwndLog, hwndAutoStat, hwndAutoProg,
-		lblMaxTitle, hwndMaxGreet, lblMaxHint)
-
-	if font != 0 {
-		for _, h := range all {
-			sendMessage(h, WM_SETFONT, font, 1)
-		}
-	}
-}
-
-// ---- 打招呼次数上限（输入框 ↔ 配置 ↔ 后台循环）----
-
-// parseEditInt 读输入框里的非负整数；空着或读不出数字都按 0（不限）处理。
-func parseEditInt(hwnd HWND) int {
-	if hwnd == 0 {
-		return 0
-	}
-	buf := make([]uint16, 24)
-	n := getWindowText(hwnd, &buf[0], len(buf))
-	if n <= 0 {
-		return 0
-	}
-	v, err := strconv.Atoi(strings.TrimSpace(syscall.UTF16ToString(buf[:n])))
-	if err != nil || v < 0 {
-		return 0
-	}
-	return v
-}
-
-// loadMaxGreetsToUI 启动时把配置里的次数上限填进输入框。
-func loadMaxGreetsToUI() {
-	if cfg.MaxGreets > 0 {
-		setWindowText(hwndMaxGreet, utf16ptr(strconv.Itoa(cfg.MaxGreets)))
-	}
-	setAutoMaxGreets(cfg.MaxGreets)
-}
-
-// syncMaxGreetsFromUI 把输入框里的次数上限同步到内存配置并落盘。
-// 改动即时生效：后台循环每次要打招呼前都会重新读一次，运行中调小也能立刻拦住。
-func syncMaxGreetsFromUI() {
-	n := parseEditInt(hwndMaxGreet)
-	setAutoMaxGreets(n)
-	if n != cfg.MaxGreets {
-		cfg.MaxGreets = n
-		_ = saveConfig(cfg)
-	}
-	requestDetectUI() // 让「已打招呼 X / 上限 Y」跟着刷新
-}
-
-// ---- 窗口置顶 ----
-
-// applyTopMost 把 topMostOn 的当前值同步到窗口层级与按钮标题。
-func applyTopMost() {
-	if hwndMain == 0 {
-		return
-	}
-	after := hwndNoTopMost
-	caption := "置顶"
-	if topMostOn {
-		after = hwndTopMost
-		caption = "已置顶·点此取消"
-	}
-	setWindowPos(hwndMain, after, 0, 0, 0, 0, SWP_NOMOVE|SWP_NOSIZE)
-	if hwndTopBtn != 0 {
-		setWindowText(hwndTopBtn, utf16ptr(caption))
-	}
-}
-
-// toggleTopMost 点击右上角按钮时切换置顶，并写入配置（下次启动保持）。
-func toggleTopMost() {
-	topMostOn = !topMostOn
-	applyTopMost()
-	cfg.TopMost = topMostOn
-	_ = saveConfig(cfg)
-}
-
-// ---- 点击点采集（支持两组，各自独立）----
-
-// groupStat / groupList 取某一组的状态标签 / 点列表控件。
-func groupStat(g int) HWND {
-	if g == 1 {
-		return hwndCapStat1
-	}
-	return hwndCapStat2
-}
-func groupList(g int) HWND {
-	if g == 1 {
-		return hwndCapList1
-	}
-	return hwndCapList2
-}
-
-// groupPoints 把某一组的点击点拼成多行文本。
-func groupPoints(g int) string {
-	var b strings.Builder
-	pts := cfg.ClickPoints
-	if g == 2 {
-		pts = cfg.ClickPoints2
-	}
-	for i, p := range pts {
-		if i > 0 {
-			b.WriteString("\r\n")
-		}
-		fmt.Fprintf(&b, "%d. (%d,%d)", i+1, p.X, p.Y)
-	}
-	return b.String()
-}
-
-// groupName 返回某一组对应的功能名（组1=打招呼按钮，组2=下一页按钮）。
-func groupName(g int) string {
-	if g == 2 {
-		return "下一页按钮"
-	}
-	return "打招呼按钮"
-}
-
-// capStatusText 某一组的简短状态文案（采集中由 startCaptureFlow 单独设置，这里不覆盖）。
-func capStatusText(g int) string {
-	pts := cfg.ClickPoints
-	if g == 2 {
-		pts = cfg.ClickPoints2
-	}
-	if len(pts) == 0 {
-		return "未采集"
-	}
-	return fmt.Sprintf("已采集 %d 点", len(pts))
-}
-
-// setGroupStatus 设置某一组的状态标签。
-func setGroupStatus(g int, text string) {
-	setWindowText(groupStat(g), utf16ptr(text))
-}
-
-// clearClickPoints 清空某一组已采集的点击点（包括还没入队的那些）。
-func clearClickPoints(g int) {
-	if g == 1 {
-		cfg.ClickPoints = []Point{}
-	} else if g == 2 {
-		cfg.ClickPoints2 = []Point{}
-	}
-	clickMu.Lock()
-	if g >= 1 && g <= 2 {
-		clickQueues[g-1] = nil
-	}
-	clickMu.Unlock()
-	updateDisplay()
-	_ = saveConfig(cfg)
-}
-
-// startCaptureFlow 启动某一组的全局鼠标监听（采集点击点）。
-// 若另一组正在采集，会先收尾那一组再切换，因为全局钩子同一时刻只能服务一组。
-func startCaptureFlow(g int) {
-	if capturing && captureGroup == g {
-		return
-	}
-	if capturing {
-		drainClicks(captureGroup) // 先保存当前组的点
-		stopCapture()
-	}
-	// 强制点击会动鼠标，开始采集前先把强制点击停掉，避免抢鼠标
-	stopForceClick(0, "开始采集")
-	if !startCapture(g) {
-		setGroupStatus(g, "启动失败：全局鼠标监听安装不上")
-		return
-	}
-	setGroupStatus(g, fmt.Sprintf("采集中：在页面点击%s的位置，按 Esc 或 [停止采集%s] 结束", groupName(g), groupName(g)))
-}
-
-// stopCaptureFlow 停止某一组的监听，并把队列里剩下的点收干净。
-// g 传 0 表示停止「当前正在采集的组」（Esc 紧急停止用）。
-func stopCaptureFlow(g int) {
-	if g == 0 {
-		if !capturing {
-			return
-		}
-		g = captureGroup
-	}
-	if !capturing || captureGroup != g {
-		return
-	}
-	stopCapture()
-	drainClicks(g)
-	// 停止时删掉最后一条：剔除「最小化后点任务栏恢复窗口」那一下误采的点
-	// （它落在任务栏上，不在本窗口矩形内，现有过滤拦不到，正好是停止前的最后一条）。
-	dropped := dropLastClickPoint(g)
-	if dropped {
-		setGroupStatus(g, "已停止采集（已移除最后一条误采点）")
-		appendLog("%s 已停止采集，并移除最后一条采集点（恢复窗口时的点击）", groupName(g))
-	} else {
-		setGroupStatus(g, "已停止采集")
-	}
-}
-
-// dropLastClickPoint 删除某一组最近采集的一条点，返回是否真的删了。
-// 用途：停止采集时剔掉「恢复窗口」那一下落在任务栏上的误采点。
-func dropLastClickPoint(g int) bool {
-	if g < 1 || g > 2 {
-		return false
-	}
-	var pts *[]Point
-	if g == 1 {
-		pts = &cfg.ClickPoints
-	} else {
-		pts = &cfg.ClickPoints2
-	}
-	if len(*pts) == 0 {
-		return false
-	}
-	*pts = (*pts)[:len(*pts)-1]
-	updateDisplay()
-	_ = saveConfig(cfg)
-	return true
-}
-
-// ---- OCR 区域（姓名 / 在线状态）----
-
-// regionOf 取某个 OCR 任务对应的区域。
-func regionOf(kind int) Rect {
-	if kind == ocrKindName {
-		return cfg.NameRegion
-	}
-	return cfg.OnlineRegion
-}
-
-// setRegion 写回某个 OCR 任务对应的区域。
-func setRegion(kind int, r Rect) {
-	if kind == ocrKindName {
-		cfg.NameRegion = r
-	} else {
-		cfg.OnlineRegion = r
-	}
-}
-
-// selectOCRRegion 框选一块 OCR 区域并保存。
-func selectOCRRegion(kind int) {
-	r, ok := selectRegion(hwndMain)
-	showWindow(hwndMain, SW_SHOW)
-	setForegroundWindow(hwndMain)
-	if !ok {
-		return
-	}
-	setRegion(kind, r)
-	appendLog("%s设置完成：%d,%d - %d,%d", kindLabel(kind),
-		r.Left, r.Top, r.Right, r.Bottom)
-	updateDisplay()
-	_ = saveConfig(cfg)
-}
-
-// clearOCRRegion 清空某块区域和它的识别结果。
-func clearOCRRegion(kind int) {
-	setRegion(kind, Rect{})
-	ocrMu.Lock()
-	if kind == ocrKindName {
-		ocrName = ocrState{}
-	} else {
-		ocrOnline = ocrState{}
-	}
-	ocrMu.Unlock()
-	appendLog("已清空%s", kindLabel(kind))
-	updateDisplay()
-	_ = saveConfig(cfg)
-}
-
-// runOCRRegion 截图 + 识别。截图和识别都放后台 goroutine，完成后 PostMessage 回主线程。
-func runOCRRegion(kind int, region Rect) {
-	if ocrBusy {
-		return
-	}
-	if !rectIsSet(region) {
-		setWindowText(statLabel(kind), utf16ptr("请先框选区域"))
-		return
-	}
-
-	ocrBusy = true
-	setWindowText(statLabel(kind), utf16ptr(kindLabel(kind)+"：识别中…"))
-
-	safeGo("runOCRRegion", func() {
-		// 万一这个 goroutine 崩了，也要把 ocrBusy 放开，否则「测试OCR」按钮会一直点不动。
-		defer func() {
-			if r := recover(); r != nil {
-				ocrBusy = false
-				recordCrash("runOCRRegion", r)
-			}
-		}()
-		st := ocrState{tested: true}
-		img, err := captureRect(region)
-		if err != nil {
-			st.err = err
-		} else {
-			start := time.Now()
-			st.text, st.err = recognizeBitmap(img)
-			st.elapsed = time.Since(start)
-		}
-
-		ocrMu.Lock()
-		if kind == ocrKindName {
-			ocrName = st
-		} else {
-			ocrOnline = st
-		}
-		ocrMu.Unlock()
-
-		postMessage(hwndMain, WM_APP_OCR, uintptr(kind), 0)
-	})
-}
-
-// onOCRReady 在主线程把后台识别结果刷到界面上。
-func onOCRReady(kind int) {
-	ocrBusy = false
-	updateOCRDisplay(kind)
-
-	ocrMu.Lock()
-	st := ocrName
-	if kind == ocrKindOnline {
-		st = ocrOnline
-	}
-	ocrMu.Unlock()
-
-	if st.err != nil {
-		appendLog("%s失败：%s", kindLabel(kind), st.err)
-	} else if kind == ocrKindOnline {
-		appendLog("在线状态 OCR：%q → %s", st.text, onlineVerdict(st.text))
-	} else {
-		appendLog("求职者姓名 OCR：%q（%dms）", st.text, st.elapsed.Milliseconds())
-	}
-	updateDetectUI()
-}
-
-// ---- 界面刷新 ----
-
-func kindLabel(kind int) string {
-	if kind == ocrKindName {
-		return "求职者姓名"
-	}
-	return "在线状态"
-}
-
-func statLabel(kind int) HWND {
-	if kind == ocrKindName {
-		return hwndOcrStat
-	}
-	return hwndOnlStat
-}
-
-func textBox(kind int) HWND {
-	if kind == ocrKindName {
-		return hwndOcrText
-	}
-	return hwndOnlText
-}
-
-// firstLine 取多行文本的第一行，用于状态栏显示。
-func firstLine(s string) string {
-	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
-		return s[:i]
-	}
-	return s
-}
-
-// onlineVerdict 把在线区域的 OCR 文本判成「在线 / 不在线」。
-func onlineVerdict(text string) string {
-	if strings.TrimSpace(text) == "" {
-		return "不在线"
-	}
-	if looksOnline(text) {
-		return "在线"
-	}
-	return "不在线"
-}
-
-// updateOCRDisplay 按任务类型刷新对应的状态标签和结果框。
-func updateOCRDisplay(kind int) {
-	ocrMu.Lock()
-	st := ocrName
-	if kind == ocrKindOnline {
-		st = ocrOnline
-	}
-	ocrMu.Unlock()
-
-	stat := statLabel(kind)
-	box := textBox(kind)
-
-	if !st.tested {
-		if kind == ocrKindName {
-			setWindowText(stat, utf16ptr("求职者姓名：未测试"))
-		} else {
-			setWindowText(stat, utf16ptr("在线状态：未测试"))
-		}
-		setWindowText(box, utf16ptr(""))
-		return
-	}
-
-	if st.err != nil {
-		setWindowText(stat, utf16ptr(kindLabel(kind)+"：失败（"+st.err.Error()+"）"))
-		setWindowText(box, utf16ptr(""))
-		return
-	}
-
-	if strings.TrimSpace(st.text) == "" {
-		msg := fmt.Sprintf("%s：没识别到文字（%dms）", kindLabel(kind), st.elapsed.Milliseconds())
-		if kind == ocrKindOnline {
-			msg = fmt.Sprintf("在线状态：不在线（没识别到文字，%dms）", st.elapsed.Milliseconds())
-		}
-		setWindowText(stat, utf16ptr(msg))
-		setWindowText(box, utf16ptr(""))
-		return
-	}
-
-	if kind == ocrKindOnline {
-		setWindowText(stat, utf16ptr(fmt.Sprintf("在线状态：%s（%dms）",
-			onlineVerdict(st.text), st.elapsed.Milliseconds())))
-	} else {
-		setWindowText(stat, utf16ptr(fmt.Sprintf("求职者姓名：%s（%dms）",
-			firstLine(st.text), st.elapsed.Milliseconds())))
-	}
-	setWindowText(box, utf16ptr(st.text))
-}
-
-// updateDetectUI 刷新日志框和「自动打招呼 / 强制点击」的状态显示。
-//
-// 名字里的 Detect 是历史原因（它由 WM_APP_DETECT 消息驱动），独立的「人员变化检测」
-// 功能已经删除，现在它只负责：日志框 + 自动打招呼两行 + 强制点击按钮文案。
-func updateDetectUI() {
-	setWindowText(hwndLog, utf16ptr(logText()))
-	scrollEditToEnd(hwndLog)
-	updateAutoUI()
-	updateForceUI()
-}
-
-func updateDisplay() {
-
-	// 采集区两组：采集中时保留各自的「采集中…」文案，只刷新点列表
-	for _, g := range []int{1, 2} {
-		if !(capturing && captureGroup == g) {
-			setWindowText(groupStat(g), utf16ptr(capStatusText(g)))
-		}
-		setWindowText(groupList(g), utf16ptr(groupPoints(g)))
-	}
-
-	setWindowText(hwndNameRgn, utf16ptr(describeRect("求职者姓名", cfg.NameRegion)))
-	setWindowText(hwndOnlRgn, utf16ptr(describeRect("在线状态", cfg.OnlineRegion)))
-
-	updateOCRDisplay(ocrKindName)
-	updateOCRDisplay(ocrKindOnline)
-}
-
-func describeRect(name string, r Rect) string {
-	if !rectIsSet(r) {
-		return name + "：未设置"
-	}
-	return fmt.Sprintf("%s：left=%d, top=%d, right=%d, bottom=%d  (%d×%d)",
-		name, r.Left, r.Top, r.Right, r.Bottom, r.Right-r.Left, r.Bottom-r.Top)
 }
 
 func main() {

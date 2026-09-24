@@ -194,6 +194,8 @@ func startAuto() {
 
 	// 强制点击会和打招呼抢鼠标，先停掉
 	stopForceClick(0, "自动打招呼开始")
+	// 快捷回复页的轮流点击同样抢鼠标，也要停掉
+	stopQuickClick("自动打招呼开始")
 
 	stop := make(chan struct{})
 	autoMu.Lock()
