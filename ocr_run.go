@@ -33,7 +33,7 @@ type OCR interface {
 // 只要文本里出现「在线」两字就算在线。
 func looksOnline(text string) bool {
 	flat := strings.Join(strings.Fields(text), "")
-	return strings.Contains(flat, "在线")
+	return strings.Contains(flat, "线")
 }
 
 // scoreGood 是「这个结果已经够像样了」的分数线，够到了就不用再试别的候选图。
