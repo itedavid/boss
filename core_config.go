@@ -36,9 +36,16 @@ type Config struct {
 	// 它是纯坐标：不做任何识别与判断，只按采集的点依次/组合点击（自动化后续实现）。
 	QuickGroups [quickGroupCount][]Point `json:"quick_groups"`
 
-	// QuickIntervals 是「快捷回复」页 6 组各自的点击间隔（毫秒）：点到下一个点之间等多久。
-	// 与 QuickGroups 一一对应（下标 0 起）。0 表示用默认值 quickIntervalDefaultMs。
-	QuickIntervals [quickGroupCount]int `json:"quick_intervals"`
+	// QuickIntervals 是旧版「快捷回复」页 6 组的单值点击间隔（毫秒）。
+	// 现已改为随机区间（下面的 Min/Max），此字段仅保留用于从老 config.json 迁移，不再写入新逻辑。
+	QuickIntervals [quickGroupCount]int `json:"quick_intervals,omitempty"`
+
+	// QuickIntervalMin / QuickIntervalMax 是「快捷回复」页 6 组各自的随机间隔区间（毫秒）：
+	// 每点完一下，在 [Min, Max] 之间随机等待再点下一组，避免固定节奏被系统检测。
+	// 与 QuickGroups 一一对应（下标 0 起）。0/留空表示用默认值 quickIntervalDefaultMs；
+	// Max 缺省（或小于 Min）时按 Min 处理，等价于「固定等 Min 毫秒」。
+	QuickIntervalMin [quickGroupCount]int `json:"quick_interval_min"`
+	QuickIntervalMax [quickGroupCount]int `json:"quick_interval_max"`
 }
 
 // quickGroupCount 是「快捷回复」页固定提供的组数。
@@ -93,6 +100,14 @@ func loadConfig() Config {
 	for i := range cfg.QuickGroups {
 		if cfg.QuickGroups[i] == nil {
 			cfg.QuickGroups[i] = []Point{}
+		}
+	}
+	// 迁移：老配置只有单值 quick_intervals，把它当成「固定区间」搬到 Min=Max，
+	// 这样升级后行为不变（仍是固定间隔），用户想随机再自己把 Max 调大即可。
+	for i := range cfg.QuickIntervals {
+		if cfg.QuickIntervalMin[i] == 0 && cfg.QuickIntervalMax[i] == 0 && cfg.QuickIntervals[i] > 0 {
+			cfg.QuickIntervalMin[i] = cfg.QuickIntervals[i]
+			cfg.QuickIntervalMax[i] = cfg.QuickIntervals[i]
 		}
 	}
 	return cfg

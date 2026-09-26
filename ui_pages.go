@@ -133,22 +133,26 @@ func createControls(hwnd HWND) {
 		hwndQkStop[i] = btnAt("停止", qkBtnStopBase+i, at(rect{X: l.qkBtnRow.X + 78, Y: l.qkBtnRow.Y, W: 50, H: btnH}))
 		hwndQkClear[i] = btnAt("清空", qkBtnClearBase+i, at(rect{X: l.qkBtnRow.X + 132, Y: l.qkBtnRow.Y, W: 50, H: btnH}))
 
-		// 点击间隔行：间隔 [输入框] ms
-		lblGap := labelAt("间隔", at(rect{X: l.qkGapRow.X, Y: l.qkGapRow.Y + 2, W: 30, H: lblH}))
-		hwndQkGap[i] = numEditAt(qkEditGapBase+i, at(rect{X: l.qkGapRow.X + 32, Y: l.qkGapRow.Y, W: 50, H: editH}))
-		sendMessage(hwndQkGap[i], EM_SETLIMITTEXT, 5, 0)
-		lblMs := labelAt("ms", at(rect{X: l.qkGapRow.X + 86, Y: l.qkGapRow.Y + 2, W: 24, H: lblH}))
-		// 间隔多大算「慢」：这里只放一句统一说明，具体值看用户在输入框里填的数
-		lblGapHint := labelAt("点到下一点等多久", at(rect{X: l.qkGapRow.X + 112, Y: l.qkGapRow.Y + 2, W: qkColW - 112, H: lblH}))
+		// 随机间隔行：间隔 [最小] ~ [最大] ms（点完在这个区间内随机等待再点下一组）
+		gx := l.qkGapRow.X
+		lblGap := labelAt("间隔", at(rect{X: gx, Y: l.qkGapRow.Y + 2, W: 28, H: lblH}))
+		hwndQkGapMin[i] = numEditAt(qkEditGapMinBase+i, at(rect{X: gx + 30, Y: l.qkGapRow.Y, W: 40, H: editH}))
+		sendMessage(hwndQkGapMin[i], EM_SETLIMITTEXT, 5, 0)
+		lblTilde := labelAt("~", at(rect{X: gx + 73, Y: l.qkGapRow.Y + 2, W: 10, H: lblH}))
+		hwndQkGapMax[i] = numEditAt(qkEditGapMaxBase+i, at(rect{X: gx + 84, Y: l.qkGapRow.Y, W: 40, H: editH}))
+		sendMessage(hwndQkGapMax[i], EM_SETLIMITTEXT, 5, 0)
+		lblMs := labelAt("ms", at(rect{X: gx + 126, Y: l.qkGapRow.Y + 2, W: 20, H: lblH}))
+		// 提示：这一行是随机区间，留空按默认；具体值看用户填的两个数
+		lblGapHint := labelAt("随机", at(rect{X: gx + 148, Y: l.qkGapRow.Y + 2, W: qkColW - 148, H: lblH}))
 
 		qkCells[i] = []HWND{hwndQkStat[i], hwndQkList[i], hwndQkStart[i], hwndQkStop[i], hwndQkClear[i],
-			lblGap, hwndQkGap[i], lblMs, lblGapHint}
+			lblGap, hwndQkGapMin[i], lblTilde, hwndQkGapMax[i], lblMs, lblGapHint}
 	}
 
 	// B 页底部公共区：轮流点击的开关键 + 说明。
 	// 放在公共区（不属于任何一组）是因为它管的是「6 组一起」这件事。
 	hwndQkRunBtn = btnAt("开始点击", idBtnQkRun, l.qkRunBtn)
-	hwndQkRunStat = labelAt("每轮按组序 1→6，每组随机挑 1 个点，没点的组跳过，无限循环",
+	hwndQkRunStat = labelAt("每轮按组序 1→6，每组随机挑 1 个点、随机间隔，没点的组跳过，无限循环",
 		l.qkRunStat)
 
 	all = append(all, btnStart, btnStop, btnClear, hwndForceBtn1,

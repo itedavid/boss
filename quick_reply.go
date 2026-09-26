@@ -21,6 +21,7 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 )
 
@@ -65,23 +66,13 @@ func quickGroupPoints(i int) []Point {
 	return cfg.QuickGroups[i]
 }
 
-// ---- 每组的点击间隔（毫秒）----
-
-// quickInterval 取第 i 组配置里的间隔值。
-// 输入框留空 / 填 0 / 配置里没有，都按默认值算，保证点起来一定有个合理的间隔。
-func quickInterval(i int) int {
-	if i < 0 || i >= quickGroupCount {
-		return quickIntervalDefaultMs
-	}
-	n := cfg.QuickIntervals[i]
-	if n <= 0 {
-		return quickIntervalDefaultMs
-	}
-	if n > quickIntervalMaxMs {
-		return quickIntervalMaxMs
-	}
-	return n
-}
+// ---- 每组的随机点击间隔（毫秒）----
+//
+// 每组配两个数：Min / Max。每次点完在 [Min, Max] 内随机等待再点下一组，
+// 固定节奏容易被系统识别成机器人，随机一下更像真人。
+// 留空 / 0 的处理：Min 为空按默认值 quickIntervalDefaultMs；
+// Max 为空（或小于 Min）时按 Min 处理，等价于「固定等 Min 毫秒」。
+// 也就是：只填 Min = 固定间隔；两个都填才是随机区间。
 
 // clampQuickInterval 把用户填的数字收敛到合法范围（0 表示「用默认值」）。
 func clampQuickInterval(n int) int {
@@ -94,45 +85,93 @@ func clampQuickInterval(n int) int {
 	return n
 }
 
-// setQuickInterval 写入第 i 组的间隔并落盘。只存用户填的原值（允许 0=默认）。
-func setQuickInterval(i, n int) {
+// quickIntervalRange 返回第 i 组「实际生效」的随机区间 [lo, hi]（都已收敛到合法范围）。
+func quickIntervalRange(i int) (int, int) {
+	if i < 0 || i >= quickGroupCount {
+		return quickIntervalDefaultMs, quickIntervalDefaultMs
+	}
+	lo := clampQuickInterval(cfg.QuickIntervalMin[i])
+	hi := clampQuickInterval(cfg.QuickIntervalMax[i])
+	if lo <= 0 {
+		lo = quickIntervalDefaultMs
+	}
+	if hi <= 0 || hi < lo {
+		hi = lo // Max 没填或比 Min 还小，就退化成固定等 lo
+	}
+	return lo, hi
+}
+
+// quickRandInterval 取第 i 组这一次要等待的毫秒数：在 [lo, hi] 内随机。
+func quickRandInterval(i int) int {
+	lo, hi := quickIntervalRange(i)
+	if hi <= lo {
+		return lo
+	}
+	return lo + rand.Intn(hi-lo+1)
+}
+
+// setQuickIntervalMin / setQuickIntervalMax 写入第 i 组区间端点并落盘。
+// 只存用户填的原值（允许 0=默认），值没变化就不落盘。
+func setQuickIntervalMin(i, n int) {
 	if i < 0 || i >= quickGroupCount {
 		return
 	}
 	n = clampQuickInterval(n)
-	if cfg.QuickIntervals[i] == n {
+	if cfg.QuickIntervalMin[i] == n {
 		return
 	}
-	cfg.QuickIntervals[i] = n
+	cfg.QuickIntervalMin[i] = n
 	_ = saveConfig(cfg)
 }
 
-// syncQuickIntervalFromUI 读第 i 组输入框的间隔，同步到配置。
-// 输入框留空 / 读不出数 -> 按 0 处理（也就是「用默认值」）。
-//
-// 回填期间（uiProgrammaticWrite）直接返回，避免把刚填进去的值读成 0 又写回配置。
-func syncQuickIntervalFromUI(i int) {
+func setQuickIntervalMax(i, n int) {
 	if i < 0 || i >= quickGroupCount {
 		return
 	}
-	if hwndQkGap[i] == 0 {
+	n = clampQuickInterval(n)
+	if cfg.QuickIntervalMax[i] == n {
+		return
+	}
+	cfg.QuickIntervalMax[i] = n
+	_ = saveConfig(cfg)
+}
+
+// syncQuickIntervalMinFromUI / syncQuickIntervalMaxFromUI 读输入框的值同步到配置。
+// 输入框留空 / 读不出数 -> 按 0 处理（也就是「用默认值」）。
+// 回填期间（uiProgrammaticWrite）直接返回，避免把刚填进去的值读成 0 又写回配置。
+func syncQuickIntervalMinFromUI(i int) {
+	if i < 0 || i >= quickGroupCount || hwndQkGapMin[i] == 0 {
 		return
 	}
 	if uiProgrammaticWrite() {
 		return
 	}
-	setQuickInterval(i, parseEditInt(hwndQkGap[i]))
+	setQuickIntervalMin(i, parseEditInt(hwndQkGapMin[i]))
 }
 
-// loadQuickIntervalsToUI 启动时把配置里的间隔填进 6 个输入框。
-// 配置里是 0（没设过）就不填，让输入框空着，输入框右边的 hint 会说明默认值。
+func syncQuickIntervalMaxFromUI(i int) {
+	if i < 0 || i >= quickGroupCount || hwndQkGapMax[i] == 0 {
+		return
+	}
+	if uiProgrammaticWrite() {
+		return
+	}
+	setQuickIntervalMax(i, parseEditInt(hwndQkGapMax[i]))
+}
+
+// loadQuickIntervalsToUI 启动时把配置里的区间端点填进各组的 Min / Max 输入框。
+// 配置里是 0（没设过）就不填，让输入框空着，右边的 hint 会说明默认值。
 func loadQuickIntervalsToUI() {
 	for i := 0; i < quickGroupCount; i++ {
-		if hwndQkGap[i] == 0 {
-			continue
+		if hwndQkGapMin[i] != 0 {
+			if n := cfg.QuickIntervalMin[i]; n > 0 {
+				setEditInt(hwndQkGapMin[i], n)
+			}
 		}
-		if n := cfg.QuickIntervals[i]; n > 0 {
-			setEditInt(hwndQkGap[i], n)
+		if hwndQkGapMax[i] != 0 {
+			if n := cfg.QuickIntervalMax[i]; n > 0 {
+				setEditInt(hwndQkGapMax[i], n)
+			}
 		}
 	}
 }
@@ -305,7 +344,7 @@ func clearQuickGroup(i int) {
 // dispatchQuickControl 按控件 ID 派发快捷回复页的按钮 / 输入框事件。
 // 按钮 ID 分三段连续排列：开始 / 停止 / 清空，各占 quickGroupCount 个号；
 // 落在哪一段决定做什么，减去该段基数就是组下标。
-// 间隔输入框是另一段（qkEditGapBase），只在内容变化时同步配置。
+// 间隔输入框分两段（qkEditGapMinBase / qkEditGapMaxBase），只在内容变化时同步配置。
 // code 是通知码（按钮的 BN_CLICKED、输入框的 EN_CHANGE）。
 // 返回是否认领了这个 ID（false 交给 defWindowProc 走默认处理）。
 func dispatchQuickControl(id int, code uint16) bool {
@@ -316,10 +355,15 @@ func dispatchQuickControl(id int, code uint16) bool {
 		stopQuickCapture(id - qkBtnStopBase)
 	case id >= qkBtnClearBase && id < qkBtnRangeEnd:
 		clearQuickGroup(id - qkBtnClearBase)
-	case id >= qkEditGapBase && id < qkEditGapBase+quickGroupCount:
-		// 间隔改动即时生效（后续做自动化时按组取用）
+	case id >= qkEditGapMinBase && id < qkEditGapMinBase+quickGroupCount:
+		// 随机区间「最小值」改动即时生效
 		if code == EN_CHANGE {
-			syncQuickIntervalFromUI(id - qkEditGapBase)
+			syncQuickIntervalMinFromUI(id - qkEditGapMinBase)
+		}
+	case id >= qkEditGapMaxBase && id < qkEditGapMaxBase+quickGroupCount:
+		// 随机区间「最大值」改动即时生效
+		if code == EN_CHANGE {
+			syncQuickIntervalMaxFromUI(id - qkEditGapMaxBase)
 		}
 	default:
 		return false

@@ -5,7 +5,8 @@
 // 规则（和老兄确认过的）：
 //  1. 按组序 1→2→…→6 轮流，一组一组的点；
 //  2. 该组一个点都没采集到就整组跳过，不点也不等；
-//  3. 每点一下，就等「这个点所属那一组」自己配的间隔（就是界面上那行「间隔 [ ] ms」）；
+//  3. 每点一下，就等「这个点所属那一组」自己配的随机间隔（界面上那行「间隔 [最小] ~ [最大] ms」，
+//     在区间内随机取，固定节奏容易被系统检测）；
 //  4. 6 组跑完算一轮，回到第 1 组继续，无限循环，只能手动停（界面按钮 / Esc）。
 //
 // 点击用前台真实鼠标（humanClick，和「强制点击」同一套），所以跑起来会占用鼠标；
@@ -168,16 +169,18 @@ func quickClickLoop(snap [][]Point, active []int, stop <-chan struct{}) {
 			}
 			// 本组随机挑一个点（用不到不重复，随机就行——组内点少，重复也无所谓）
 			p := snap[i][rand.Intn(len(snap[i]))]
+			// 这一次等待也在本组配的区间内随机取，避免固定节奏被系统检测
+			wait := quickRandInterval(i)
 			if err := humanClick(p); err != nil {
 				appendLog("轮流点击失败（%s）：%s", quickGroupName(i), err)
 			} else {
-				appendLog("轮流点击：%s -> (%d,%d)（本组 %d 个点里随机）",
-					quickGroupName(i), p.X, p.Y, len(snap[i]))
+				appendLog("轮流点击：%s -> (%d,%d)（本组 %d 个点里随机，等待 %d ms）",
+					quickGroupName(i), p.X, p.Y, len(snap[i]), wait)
 			}
 			requestDetectUI()
 
-			// 点完等这一组自己配的间隔，再点下一组。
-			if sleepOrStop(stop, time.Duration(quickInterval(i))*time.Millisecond) {
+			// 点完等这一组自己配的随机间隔，再点下一组。
+			if sleepOrStop(stop, time.Duration(wait)*time.Millisecond) {
 				return
 			}
 		}
