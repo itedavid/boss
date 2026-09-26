@@ -35,7 +35,7 @@ func updateDisplay() {
 		setWindowText(groupList(g), utf16ptr(groupPoints(g)))
 	}
 
-	// 快捷回复页的 6 组同样刷一遍（两页的控件都在，只是其中一页被隐藏着）
+	// 快捷回复页的 8 组同样刷一遍（两页的控件都在，只是其中一页被隐藏着）
 	updateQuickPage()
 
 	setWindowText(hwndNameRgn, utf16ptr(describeRect("求职者姓名", cfg.NameRegion)))

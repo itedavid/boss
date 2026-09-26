@@ -6,7 +6,7 @@
 // 全局鼠标钩子采集点击点、点击点存 config.json、主线程刷界面。
 //
 // 区别在于：打招呼那套有识别与判断（读姓名、查在线，再决定点不点）；
-// 这一套**不做任何识别和判断**，只是把 6 组点击点分别采集下来，
+// 这一套**不做任何识别和判断**，只是把 8 组点击点分别采集下来，
 // 将来按组顺序点出去（自动化还没做，见页面上那句说明）。
 //
 // 组号约定：内部统一用「全局组号」 g：
@@ -173,6 +173,93 @@ func loadQuickIntervalsToUI() {
 				setEditInt(hwndQkGapMax[i], n)
 			}
 		}
+	}
+}
+
+// ---- 批间休息（分钟）----
+//
+// 轮流点击按「批」跑：每批随机 15～25 轮，跑满就在这里配的区间 [Min, Max] 内随机挑
+// 一个整数分钟休息，休息完再随机下一批的目标轮数继续。两项都填 0 / 留空表示不休息。
+
+// clampQuickPause 把用户填的分钟数收敛到合法范围（负数按 0，超过上限按上限）。
+func clampQuickPause(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n > quickPauseMaxMinutes {
+		return quickPauseMaxMinutes
+	}
+	return n
+}
+
+// quickPauseRange 返回批间休息「实际生效」的区间 [lo, hi]（分钟，已收敛到合法范围）。
+// 两项都为 0 表示不休息，返回 (0, 0)。Max 小于 Min 时按 Min 处理。
+func quickPauseRange() (int, int) {
+	lo := clampQuickPause(cfg.QuickPauseMinMinutes)
+	hi := clampQuickPause(cfg.QuickPauseMaxMinutes)
+	if lo == 0 && hi == 0 {
+		return 0, 0 // 都留空 / 都填 0 = 不休息
+	}
+	if hi < lo {
+		hi = lo // Max 比 Min 小，按 Min 处理
+	}
+	return lo, hi
+}
+
+// quickRandPauseMinutes 取本次批间休息的分钟数：在 [lo, hi] 内随机整数；不休息则返回 0。
+func quickRandPauseMinutes() int {
+	lo, hi := quickPauseRange()
+	if lo == 0 && hi == 0 {
+		return 0
+	}
+	if hi <= lo {
+		return lo
+	}
+	return lo + rand.Intn(hi-lo+1)
+}
+
+// setQuickPauseMin / setQuickPauseMax 写入批间休息区间端点并落盘（值没变化就不落盘）。
+func setQuickPauseMin(n int) {
+	n = clampQuickPause(n)
+	if cfg.QuickPauseMinMinutes == n {
+		return
+	}
+	cfg.QuickPauseMinMinutes = n
+	_ = saveConfig(cfg)
+}
+
+func setQuickPauseMax(n int) {
+	n = clampQuickPause(n)
+	if cfg.QuickPauseMaxMinutes == n {
+		return
+	}
+	cfg.QuickPauseMaxMinutes = n
+	_ = saveConfig(cfg)
+}
+
+// syncQuickPauseMinFromUI / syncQuickPauseMaxFromUI 读输入框的值同步到配置。
+// 输入框留空 / 读不出数 -> 按 0 处理（不休息）。回填期间直接返回，避免读成 0 又写回。
+func syncQuickPauseMinFromUI() {
+	if hwndQkPauseMin == 0 || uiProgrammaticWrite() {
+		return
+	}
+	setQuickPauseMin(parseEditInt(hwndQkPauseMin))
+}
+
+func syncQuickPauseMaxFromUI() {
+	if hwndQkPauseMax == 0 || uiProgrammaticWrite() {
+		return
+	}
+	setQuickPauseMax(parseEditInt(hwndQkPauseMax))
+}
+
+// loadQuickPauseToUI 启动时把配置里的批间休息区间填进两个输入框（0 就留空）。
+func loadQuickPauseToUI() {
+	if hwndQkPauseMin != 0 && cfg.QuickPauseMinMinutes > 0 {
+		setEditInt(hwndQkPauseMin, cfg.QuickPauseMinMinutes)
+	}
+	if hwndQkPauseMax != 0 && cfg.QuickPauseMaxMinutes > 0 {
+		setEditInt(hwndQkPauseMax, cfg.QuickPauseMaxMinutes)
 	}
 }
 

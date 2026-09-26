@@ -60,18 +60,25 @@ type layout struct {
 	topBtnRow            rect // 顶部「窗口置顶」按钮所在行
 
 	// ---- 快捷回复页（B 页）----
-	// 每组控件同理：存「第 1 组」的 rect，第 n 组按 qkCols 换行偏移。
-	qkTop      rect // 该页标题/说明行
-	qkStat     rect // 每组的状态标签
-	qkList     rect // 每组的点列表
-	qkBtnRow   rect // 每组的三个按钮所在行（采集/停止/清空）
-	qkGapRow   rect // 每组的点击间隔输入行（间隔 [ 500 ] ms）
-	qkGroupH   rect // 每组占的总高（用 H 记高度）
-	qkBottom   rect
-	qkRunBtn   rect // B 页底部「开始点击」按钮（公共区）
-	qkRunStat  rect // 该按钮右边的一行说明
-	pageBtnRow rect // 页面切换按钮所在行（公共区，与置顶同一行）
-	bPage      int  // B 页内容起始 y（仅用于窗口高度估算）
+	// 每组控件同理：存「第 1 组」的 rect，第 n 组按 qkCols 换行偏移（共 8 组、四行）。
+	qkTop        rect // 该页标题/说明行
+	qkStat       rect // 每组的状态标签
+	qkList       rect // 每组的点列表
+	qkBtnRow     rect // 每组的三个按钮所在行（采集/停止/清空）
+	qkGapRow     rect // 每组的点击间隔输入行（间隔 [ 500 ] ms）
+	qkGroupH     rect // 每组占的总高（用 H 记高度）
+	qkBottom     rect
+	qkRunBtn     rect // B 页底部「开始点击」按钮（公共区）
+	qkRunStat    rect // 该按钮右边的一行说明
+	qkBatchStat  rect // 运行状态行（本批进度 / 累计轮数 / 批间休息）
+	qkPauseLbl1  rect // 批间休息设置：前缀「批间休息」
+	qkPauseMin   rect // 批间休息设置：最小分钟输入框
+	qkPauseTilde rect // 批间休息设置：「~」
+	qkPauseMax   rect // 批间休息设置：最大分钟输入框
+	qkPauseLbl2  rect // 批间休息设置：后缀「分钟（0/留空=不休息）」
+	qkPageBottom int  // B 页最底部 y（窗口高度估算用）
+	pageBtnRow   rect // 页面切换按钮所在行（公共区，与置顶同一行）
+	bPage        int  // B 页内容起始 y（仅用于窗口高度估算）
 }
 
 func controlY() layout {
@@ -117,7 +124,7 @@ func controlY() layout {
 	cb := &rowCursor{y: topY}
 	// B 页顶部说明行
 	l.qkTop = rect{X: colX, Y: cb.next(lblH, rowGap), W: wideW, H: lblH}
-	// 6 组：每行 qkCols 组。每组 = 状态标签 + 点列表 + 按钮行 + 间隔行
+	// 8 组：每行 qkCols 组，共四行。每组 = 状态标签 + 点列表 + 按钮行 + 间隔行
 	l.qkStat = rect{X: colX, Y: cb.next(lblH, rowGap), W: qkColW, H: lblH}
 	l.qkList = rect{X: colX, Y: cb.next(qkListH, rowGap), W: qkColW, H: qkListH}
 	l.qkBtnRow = rect{X: colX, Y: cb.next(btnH, rowGap), W: qkColW, H: btnH}
@@ -129,11 +136,29 @@ func controlY() layout {
 	// 底部公共区：轮流点击的 [开始点击] 按钮 + 一行说明（不属于任何一组）
 	l.qkRunBtn = rect{X: colX, Y: l.qkBottom.Y + rowGapBig, W: btnW, H: btnH}
 	l.qkRunStat = rect{X: colX + btnW + gapLoose, Y: l.qkRunBtn.Y + 5, W: wideW - btnW - gapLoose, H: lblH}
+	// 运行状态行：本批进度 / 累计轮数 / 批间休息（单独占一行，便于放下长文案）
+	l.qkBatchStat = rect{X: colX, Y: l.qkRunBtn.Y + btnH + rowGap, W: wideW, H: lblH}
+	// 批间休息设置行：批间休息 [Min] ~ [Max] 分钟（0/留空=不休息）
+	pauseY := l.qkBatchStat.Y + lblH + rowGap
+	px := colX
+	l.qkPauseLbl1 = rect{X: px, Y: pauseY + 2, W: 60, H: lblH}
+	l.qkPauseMin = rect{X: px + 64, Y: pauseY, W: 52, H: editH}
+	l.qkPauseTilde = rect{X: px + 120, Y: pauseY + 2, W: 12, H: lblH}
+	l.qkPauseMax = rect{X: px + 134, Y: pauseY, W: 52, H: editH}
+	l.qkPauseLbl2 = rect{X: px + 192, Y: pauseY + 2, W: wideW - 192, H: lblH}
+	l.qkPageBottom = pauseY + editH
 	return l
 }
 
 // clientSize 算出刚好放得下所有控件的客户区大小。
-// 两页共用同一个窗口，取较高的那一页（当前是打招呼页）。
+// 两页共用同一个窗口，取两页里较高的那一页（8 组的快捷回复页可能比打招呼页更高）。
 func clientSize() (int, int) {
-	return colX + wideW + colX, controlY().exitRow.Y + btnH + topY
+	l := controlY()
+	aBottom := l.exitRow.Y + btnH
+	bBottom := l.qkPageBottom
+	bottom := aBottom
+	if bBottom > bottom {
+		bottom = bBottom
+	}
+	return colX + wideW + colX, bottom + topY
 }
