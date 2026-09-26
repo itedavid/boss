@@ -9,31 +9,33 @@ import (
 )
 
 const (
-	idBtnExit       = 1003
-	idBtnStart      = 1004
-	idBtnStop       = 1005
-	idBtnClearClks  = 1008
-	idBtnSelName    = 1009
-	idBtnTestName   = 1010
-	idBtnClearName  = 1011
-	idBtnSelOnline  = 1012
-	idBtnTestOnline = 1013
-	idBtnClearOnl   = 1014
-	idBtnClearLog   = 1017
-	idBtnAuto       = 1018
-	idBtnAutoStop   = 1019
-	idBtnForce2     = 1023 // 采集区「强制点击打招呼」：对第1组点击点做强制点击（toggle 开关）
-	idBtnStart2     = 1024 // 开始采集下一页按钮
-	idBtnStop2      = 1025 // 停止采集下一页按钮
-	idBtnClearClks2 = 1026 // 清空下一页按钮
-	idBtnForce3     = 1027 // 采集区「强制点击下一页」：对第2组点击点做强制点击（toggle 开关）
-	idEditMaxGreet  = 1028 // 「打招呼次数上限」输入框
-	idBtnTop        = 1029 // 窗口置顶切换按钮（右上角）
-	idBtnPage       = 1030 // 页面切换按钮（打招呼页 ↔ 快捷回复页）
-	idBtnQkRun      = 1031 // 「开始点击 / 停止点击」：轮流点击 B 页 6 组已采集的坐标点
+	idBtnExit        = 1003
+	idBtnStart       = 1004
+	idBtnStop        = 1005
+	idBtnClearClks   = 1008
+	idBtnSelName     = 1009
+	idBtnTestName    = 1010
+	idBtnClearName   = 1011
+	idBtnSelOnline   = 1012
+	idBtnTestOnline  = 1013
+	idBtnClearOnl    = 1014
+	idBtnClearLog    = 1017
+	idBtnAuto        = 1018
+	idBtnAutoStop    = 1019
+	idBtnForce2      = 1023 // 采集区「强制点击打招呼」：对第1组点击点做强制点击（toggle 开关）
+	idBtnStart2      = 1024 // 开始采集下一页按钮
+	idBtnStop2       = 1025 // 停止采集下一页按钮
+	idBtnClearClks2  = 1026 // 清空下一页按钮
+	idBtnForce3      = 1027 // 采集区「强制点击下一页」：对第2组点击点做强制点击（toggle 开关）
+	idEditMaxGreet   = 1028 // 「打招呼次数上限」输入框
+	idBtnTop         = 1029 // 窗口置顶切换按钮（右上角）
+	idBtnPage        = 1030 // 页面切换按钮（打招呼页 ↔ 快捷回复页）
+	idBtnQkRun       = 1031 // 「开始点击 / 停止点击」：轮流点击 B 页 8 组已采集的坐标点
+	idEditQkPauseMin = 1032 // 批间休息「最小分钟数」输入框（B 页底部）
+	idEditQkPauseMax = 1033 // 批间休息「最大分钟数」输入框（B 页底部）
 )
 
-// 「快捷回复」页 6 组控件的按钮 ID。
+// 「快捷回复」页 8 组控件的按钮 ID。
 // 每组三个按钮各占连续的 quickGroupCount 个号（quickGroupCount 见 core_config.go）。
 // 派发时用区间判断是哪一类、减基数得到组号。
 const (
@@ -43,7 +45,7 @@ const (
 	qkBtnRangeEnd  = qkBtnClearBase + quickGroupCount
 )
 
-// 「快捷回复」页 6 组「随机点击间隔」输入框的 ID：每组两个框（最小值 / 最大值）。
+// 「快捷回复」页 8 组「随机点击间隔」输入框的 ID：每组两个框（最小值 / 最大值）。
 // 各占连续的 quickGroupCount 个号，分两段排。起点在上面那三段按钮号之后再留一段安全距离，
 // 免得以后给按钮加段时撞号。改动即时生效（EN_CHANGE，见 wndProc）。
 const (
@@ -108,16 +110,19 @@ var (
 	hwndPageBtn HWND // 「打招呼 / 快捷回复」页面切换按钮
 
 	// 快捷回复页（B 页）的控件：每组一套，下标 0..quickGroupCount-1。
-	hwndQkStat  [quickGroupCount]HWND // 该组状态标签
-	hwndQkList  [quickGroupCount]HWND // 该组点列表
-	hwndQkStart [quickGroupCount]HWND // 开始采集
-	hwndQkStop  [quickGroupCount]HWND // 停止采集
+	hwndQkStat   [quickGroupCount]HWND // 该组状态标签
+	hwndQkList   [quickGroupCount]HWND // 该组点列表
+	hwndQkStart  [quickGroupCount]HWND // 开始采集
+	hwndQkStop   [quickGroupCount]HWND // 停止采集
 	hwndQkClear  [quickGroupCount]HWND // 清空
 	hwndQkGapMin [quickGroupCount]HWND // 随机间隔·最小值输入框（毫秒）
 	hwndQkGapMax [quickGroupCount]HWND // 随机间隔·最大值输入框（毫秒）
 
-	hwndQkRunBtn  HWND // B 页「开始点击 / 停止点击」（公共区，不属于某一组）
-	hwndQkRunStat HWND // B 页轮流点击的状态说明行
+	hwndQkRunBtn    HWND // B 页「开始点击 / 停止点击」（公共区，不属于某一组）
+	hwndQkRunStat   HWND // B 页轮流点击的固定说明行（组序 1→8、随机间隔…）
+	hwndQkBatchStat HWND // B 页轮流点击的运行状态行（本批进度 / 累计轮数 / 批间休息）
+	hwndQkPauseMin  HWND // 批间休息「最小分钟数」输入框
+	hwndQkPauseMax  HWND // 批间休息「最大分钟数」输入框
 
 	// A 页（打招呼页）的控件集合，切页时整批显隐用。
 	pageACtrls []HWND
@@ -206,8 +211,18 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 			togglePage()
 		case idBtnQkRun:
 			toggleQuickClick()
+		case idEditQkPauseMin:
+			// 批间休息「最小分钟数」改动即时生效
+			if uint16(wparam>>16) == EN_CHANGE {
+				syncQuickPauseMinFromUI()
+			}
+		case idEditQkPauseMax:
+			// 批间休息「最大分钟数」改动即时生效
+			if uint16(wparam>>16) == EN_CHANGE {
+				syncQuickPauseMaxFromUI()
+			}
 		default:
-			// 快捷回复页 6 组的 开始/停止/清空：ID 按「类型 + 组号」连续排（见 qkBtnStartBase）
+			// 快捷回复页 8 组的 开始/停止/清空：ID 按「类型 + 组号」连续排（见 qkBtnStartBase）
 			// 以及每组两个「随机间隔」输入框（见 qkEditGapMinBase / qkEditGapMaxBase）。
 			dispatchQuickControl(int(uint16(wparam)), uint16(wparam>>16))
 		}
@@ -241,6 +256,7 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 	case WM_APP_LOADCFG:
 		loadMaxGreetsToUI()
 		loadQuickIntervalsToUI()
+		loadQuickPauseToUI()
 		return 0
 
 	// OCR 后台 goroutine 发来的通知（wparam = 任务类型）

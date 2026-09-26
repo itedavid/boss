@@ -118,7 +118,7 @@ func createControls(hwnd HWND) {
 	btnTop := btnAt("置顶", idBtnTop, l.topBtnRow)
 	hwndPageBtn = btnAt("快捷回复", idBtnPage, l.pageBtnRow)
 
-	// ---- 快捷回复页（B 页）控件：6 组，每组 状态标签 + 点列表 + 三个按钮 ----
+	// ---- 快捷回复页（B 页）控件：8 组（两列四行），每组 状态标签 + 点列表 + 三个按钮 ----
 	qkCells := [quickGroupCount][]HWND{}
 	for i := 0; i < quickGroupCount; i++ {
 		row, col := i/qkCols, i%qkCols
@@ -149,11 +149,21 @@ func createControls(hwnd HWND) {
 			lblGap, hwndQkGapMin[i], lblTilde, hwndQkGapMax[i], lblMs, lblGapHint}
 	}
 
-	// B 页底部公共区：轮流点击的开关键 + 说明。
-	// 放在公共区（不属于任何一组）是因为它管的是「6 组一起」这件事。
+	// B 页底部公共区：轮流点击的开关键 + 说明 + 运行状态 + 批间休息设置。
+	// 放在公共区（不属于任何一组）是因为它管的是「8 组一起」这件事。
 	hwndQkRunBtn = btnAt("开始点击", idBtnQkRun, l.qkRunBtn)
-	hwndQkRunStat = labelAt("每轮按组序 1→6，每组随机挑 1 个点、随机间隔，没点的组跳过，无限循环",
+	hwndQkRunStat = labelAt("每轮按组序 1→8，每组随机挑 1 个点、随机间隔，没点的组跳过；每批 15~25 轮，跑满进入批间休息",
 		l.qkRunStat)
+	hwndQkBatchStat = labelAt("状态：未开始", l.qkBatchStat)
+
+	// 批间休息设置：批间休息 [Min] ~ [Max] 分钟（0/留空=不休息）
+	lblPause1 := labelAt("批间休息", l.qkPauseLbl1)
+	hwndQkPauseMin = numEditAt(idEditQkPauseMin, l.qkPauseMin)
+	sendMessage(hwndQkPauseMin, EM_SETLIMITTEXT, 4, 0)
+	lblPauseTilde := labelAt("~", l.qkPauseTilde)
+	hwndQkPauseMax = numEditAt(idEditQkPauseMax, l.qkPauseMax)
+	sendMessage(hwndQkPauseMax, EM_SETLIMITTEXT, 4, 0)
+	lblPause2 := labelAt("分钟（0/留空=不休息，最长 1440）", l.qkPauseLbl2)
 
 	all = append(all, btnStart, btnStop, btnClear, hwndForceBtn1,
 		btnTop, hwndPageBtn,
@@ -174,8 +184,10 @@ func createControls(hwnd HWND) {
 	pageACtrls = append(pageACtrls, all...)
 	pageACtrls = append(pageACtrls, shared...)
 	pageBCtrls = append(pageBCtrls, shared...)
-	pageBCtrls = append(pageBCtrls, hwndQkRunBtn, hwndQkRunStat)
-	all = append(all, hwndQkRunBtn, hwndQkRunStat)
+	qkBottomCtrls := []HWND{hwndQkRunBtn, hwndQkRunStat, hwndQkBatchStat,
+		lblPause1, hwndQkPauseMin, lblPauseTilde, hwndQkPauseMax, lblPause2}
+	pageBCtrls = append(pageBCtrls, qkBottomCtrls...)
+	all = append(all, qkBottomCtrls...)
 	for _, cell := range qkCells {
 		pageBCtrls = append(pageBCtrls, cell...)
 		all = append(all, cell...)

@@ -25,7 +25,7 @@ var (
 
 	clickMu sync.Mutex
 	// clickQueues 是各采集组待入队的点击点，下标 = 组号 - 1。
-	// 前两组是打招呼页的「打招呼按钮 / 下一页按钮」；再往后是快捷回复页的 6 组。
+	// 前两组是打招呼页的「打招呼按钮 / 下一页按钮」；再往后是快捷回复页的 8 组。
 	// 组号 g 与 quickGroupCount 的关系：1、2 是打招呼页，3..2+quickGroupCount 是快捷回复页第 1..N 组。
 	clickQueues [2 + quickGroupCount][]Point
 )
@@ -187,7 +187,7 @@ func lowLevelKeyboardProc(nCode int32, wparam, lparam uintptr) uintptr {
 }
 
 // drainClicks 在主线程把某一组的队列点击点并入配置，然后刷新界面并落盘。
-// group 为 1/2（打招呼页两组）或 3..2+quickGroupCount（快捷回复页 6 组）。
+// group 为 1/2（打招呼页两组）或 3..2+quickGroupCount（快捷回复页 8 组）。
 func drainClicks(group int) {
 	if group < 1 || group > len(clickQueues) {
 		return
