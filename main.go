@@ -43,10 +43,13 @@ const (
 	qkBtnRangeEnd  = qkBtnClearBase + quickGroupCount
 )
 
-// 「快捷回复」页 6 组「点击间隔」输入框的 ID。
-// 每组的输入框只占 1 个号，所以起点要在上面那三段按钮号之后再留一段安全距离，
+// 「快捷回复」页 6 组「随机点击间隔」输入框的 ID：每组两个框（最小值 / 最大值）。
+// 各占连续的 quickGroupCount 个号，分两段排。起点在上面那三段按钮号之后再留一段安全距离，
 // 免得以后给按钮加段时撞号。改动即时生效（EN_CHANGE，见 wndProc）。
-const qkEditGapBase = 4000
+const (
+	qkEditGapMinBase = 4000
+	qkEditGapMaxBase = qkEditGapMinBase + quickGroupCount
+)
 
 // 界面尺寸（像素）
 const (
@@ -109,8 +112,9 @@ var (
 	hwndQkList  [quickGroupCount]HWND // 该组点列表
 	hwndQkStart [quickGroupCount]HWND // 开始采集
 	hwndQkStop  [quickGroupCount]HWND // 停止采集
-	hwndQkClear [quickGroupCount]HWND // 清空
-	hwndQkGap   [quickGroupCount]HWND // 点击间隔输入框（毫秒）
+	hwndQkClear  [quickGroupCount]HWND // 清空
+	hwndQkGapMin [quickGroupCount]HWND // 随机间隔·最小值输入框（毫秒）
+	hwndQkGapMax [quickGroupCount]HWND // 随机间隔·最大值输入框（毫秒）
 
 	hwndQkRunBtn  HWND // B 页「开始点击 / 停止点击」（公共区，不属于某一组）
 	hwndQkRunStat HWND // B 页轮流点击的状态说明行
@@ -204,7 +208,7 @@ func wndProc(hwnd HWND, msg uint32, wparam, lparam uintptr) uintptr {
 			toggleQuickClick()
 		default:
 			// 快捷回复页 6 组的 开始/停止/清空：ID 按「类型 + 组号」连续排（见 qkBtnStartBase）
-			// 以及 6 个「点击间隔」输入框（见 qkEditGapBase）。
+			// 以及每组两个「随机间隔」输入框（见 qkEditGapMinBase / qkEditGapMaxBase）。
 			dispatchQuickControl(int(uint16(wparam)), uint16(wparam>>16))
 		}
 		return 0
